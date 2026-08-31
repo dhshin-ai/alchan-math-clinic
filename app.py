@@ -32,14 +32,16 @@ def inject_custom_css():
     <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
 
-    html, body, [class*="st-"] {
-        font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji";
+    /* 이모지 및 전체 폰트 설정 (이모지 깨짐 완벽 방지) */
+    html, body, [class*="st-"], button, button *, input, textarea, select, span, div, p {
+        font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji" !important;
     }
 
     .stApp {
         background-color: #F8FAFC;
     }
-    
+
+    /* 사이드바 완전히 숨기기 */
     [data-testid="stSidebar"] {
         display: none;
     }
@@ -100,10 +102,20 @@ def inject_custom_css():
         font-weight: 700 !important;
     }
 
-    div[data-testid="stKey-btn_mode1"] > button,
-    div[data-testid="stKey-btn_mode2"] > button {
+    /* 파일 업로더 내 버튼 예외 처리 (대형 카드 스타일 상속 방지) */
+    div[data-testid="stFileUploader"] button {
+        min-height: unset !important;
+        padding: 0.4rem 0.8rem !important;
+        font-size: 0.875rem !important;
+    }
+
+    /* 💡 메인 2개 모드 선택 대형 카드 버튼 (100% 선명 및 크기 보장) */
+    div[data-testid="stKey-btn_mode1"] button,
+    div[data-testid="stKey-btn_mode2"] button,
+    div.stButton > button[data-testid="stBaseButton-primary"],
+    div.stButton > button[kind="primary"] {
         width: 100% !important;
-        min-height: 180px !important;
+        min-height: 190px !important;
         white-space: pre-wrap !important;
         word-break: keep-all !important;
         font-size: 1.05rem !important;
@@ -118,8 +130,10 @@ def inject_custom_css():
         transition: all 0.25s ease-in-out !important;
     }
 
-    div[data-testid="stKey-btn_mode1"] > button:hover,
-    div[data-testid="stKey-btn_mode2"] > button:hover {
+    div[data-testid="stKey-btn_mode1"] button:hover,
+    div[data-testid="stKey-btn_mode2"] button:hover,
+    div.stButton > button[data-testid="stBaseButton-primary"]:hover,
+    div.stButton > button[kind="primary"]:hover {
         border-color: #3A449A !important;
         color: #3A449A !important;
         background-color: #F1F5F9 !important;
@@ -336,7 +350,7 @@ if st.session_state.selected_mode is None:
             "정답 대신 스스로 답을 찾아갈 수 있게\n"
             "다혜 쌤이 차근차근 질문을 던져줄게요!"
         )
-        if st.button(btn1_text, key="btn_mode1", use_container_width=True):
+        if st.button(btn1_text, key="btn_mode1", use_container_width=True, type="primary"):
             st.session_state.selected_mode = "❓ 스스로 풀어보기 (차근차근 질문)"
             st.rerun()
 
@@ -347,7 +361,7 @@ if st.session_state.selected_mode is None:
             "잘 접근한 부분과 어디서 개념/계산이\n"
             "삐끗했는지 오답 위치를 콕 짚어줄게요!"
         )
-        if st.button(btn2_text, key="btn_mode2", use_container_width=True):
+        if st.button(btn2_text, key="btn_mode2", use_container_width=True, type="primary"):
             st.session_state.selected_mode = "✍️ 내 풀이 검토 (문제 + 연습장)"
             st.rerun()
 
