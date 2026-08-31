@@ -1,4 +1,5 @@
 import base64
+import json
 import re
 import anthropic
 import streamlit as st
@@ -165,6 +166,122 @@ def get_response_text(response):
     return cleaned.strip()
 
 
+# -------------------------------------------------------------------
+# 📈 자동 그래프 생성: 답변 속 ```graph {JSON} 블록을 Matplotlib 그림으로 변환
+# -------------------------------------------------------------------
+GRAPH_BLOCK_RE = re.compile(r"```graph\s*(\{.*?\})\s*```", re.DOTALL)
+_SAFE_EXPR_RE = re.compile(r"^[0-9xX+\-*/.,()%\s a-z_]+$")
+
+
+def _safe_eval_curve(expr, xs):
+    """제한된 네임스페이스에서만 함수식을 평가한다 (numpy 벡터 연산)."""
+    import numpy as np
+
+    if not isinstance(expr, str) or len(expr) > 200 or "__" in expr:
+        return None
+    if not _SAFE_EXPR_RE.match(expr):
+        return None
+    allowed = {
+        "x": xs, "sin": np.sin, "cos": np.cos, "tan": np.tan,
+        "exp": np.exp, "log": np.log, "log10": np.log10, "sqrt": np.sqrt,
+        "abs": np.abs, "pi": np.pi, "e": np.e, "floor": np.floor, "ceil": np.ceil,
+    }
+    try:
+        ys = eval(expr, {"__builtins__": {}}, allowed)  # noqa: S307 - 제한된 네임스페이스
+        ys = np.asarray(ys, dtype=float)
+        if ys.shape != xs.shape:
+            ys = np.full_like(xs, float(ys))
+        return ys
+    except Exception:
+        return None
+
+
+def _render_graph(raw_json):
+    try:
+        spec = json.loads(raw_json)
+    except Exception:
+        return
+    try:
+        import numpy as np
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        st.info("📈 그래프 라이브러리를 불러오지 못했어요. (matplotlib 설치 필요)")
+        return
+
+    xr = spec.get("x_range") or [-10, 10]
+    try:
+        x0, x1 = float(xr[0]), float(xr[1])
+        if x0 == x1:
+            raise ValueError
+    except Exception:
+        x0, x1 = -10.0, 10.0
+    xs = np.linspace(x0, x1, 400)
+
+    plt.rcParams["axes.unicode_minus"] = False
+    fig, ax = plt.subplots(figsize=(5, 3.6))
+
+    funcs = spec.get("functions") or []
+    labels = spec.get("labels") or []
+    drew_something = False
+
+    for i, expr in enumerate(funcs):
+        ys = _safe_eval_curve(expr, xs)
+        if ys is None:
+            continue
+        lbl = str(labels[i]) if i < len(labels) else f"f{i + 1}(x)"
+        ax.plot(xs, ys, linewidth=2, label=lbl)
+        drew_something = True
+
+    for vx in spec.get("vlines", []) or []:
+        try:
+            ax.axvline(float(vx), color="#94A3B8", linestyle="--", linewidth=1)
+            drew_something = True
+        except Exception:
+            pass
+    for hy in spec.get("hlines", []) or []:
+        try:
+            ax.axhline(float(hy), color="#94A3B8", linestyle="--", linewidth=1)
+            drew_something = True
+        except Exception:
+            pass
+    for pt in spec.get("points", []) or []:
+        try:
+            ax.scatter([float(pt[0])], [float(pt[1])], color="#00A19D", zorder=5)
+            drew_something = True
+        except Exception:
+            pass
+
+    if not drew_something:
+        plt.close(fig)
+        return
+
+    ax.axhline(0, color="#334155", linewidth=0.8)
+    ax.axvline(0, color="#334155", linewidth=0.8)
+    ax.grid(True, alpha=0.3)
+    title = spec.get("title")
+    if isinstance(title, str) and title.strip():
+        ax.set_title(title.strip(), fontsize=11)
+    if any(labels) or funcs:
+        ax.legend(fontsize=8, loc="best")
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+
+
+def render_message(text):
+    """마크다운을 렌더링하되 ```graph 블록은 Matplotlib 그림으로 대체한다."""
+    specs = []
+    display_text = GRAPH_BLOCK_RE.sub(
+        lambda m: specs.append(m.group(1)) or "", text
+    ).strip()
+    if display_text:
+        st.markdown(display_text)
+    for raw in specs:
+        _render_graph(raw)
+
+
 def load_system_prompt():
     default_prompt = (
         "너는 친절하고 실력 있는 알찬학원 수학 강사 신다혜 선생님이다.\n\n"
@@ -172,7 +289,8 @@ def load_system_prompt():
         "1. 모든 수학 공식, 수식, 변수(x, y, a, b 등), 숫자 식, 방정식, 기호는 예외 없이 100% LaTeX 표기법(`$ ... $` 또는 `$$ ... $$`)으로 작성해라.\n"
         "2. 분수를 작성할 때 가로 형태(1/2, a/b)는 절대 사용하지 말고, 반드시 문제집처럼 세로 분수 형태인 `\\dfrac{a}{b}`를 사용해라.\n"
         "   - 예시: 1/2 대신 $\\dfrac{1}{2}$, 3/4 대신 $\\dfrac{3}{4}$\n"
-        "3. 학생이 스스로 생각할 수 있도록 친근한 다혜 쌤 톤으로 차근차근 질문을 건네며 이끌어줘라."
+        "3. 그래프가 이해에 도움이 되면 답변 맨 끝에 ```graph {\"functions\": [\"x**2\"], \"x_range\": [-5, 5]} ``` 형식의 JSON 코드펜스를 하나 붙여라. (남발 금지)\n"
+        "4. 학생이 스스로 생각할 수 있도록 친근한 다혜 쌤 톤으로 차근차근 질문을 건네며 이끌어줘라."
     )
     try:
         with open("system_prompt.txt", "r", encoding="utf-8") as f:
@@ -397,7 +515,10 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
 # 채팅 메시지 출력
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+        if msg["role"] == "assistant":
+            render_message(msg["content"])
+        else:
+            st.markdown(msg["content"])
 
 # 대화 입력
 if prompt := st.chat_input("다혜 쌤에게 답장하기 (예: 정답은 \\dfrac{1}{2} 같아요!)"):
@@ -466,7 +587,7 @@ if prompt := st.chat_input("다혜 쌤에게 답장하기 (예: 정답은 \\dfra
                     messages=api_messages,
                 )
                 bot_reply = get_response_text(response)
-                st.markdown(bot_reply)
+                render_message(bot_reply)
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
