@@ -3,44 +3,26 @@ import re
 import anthropic
 import streamlit as st
 
-# 모드 선택·업로드·채팅이 모두 메인 화면에 있으므로 사이드바는 접어 둔다.
-# 홈 버튼으로 파일 업로더를 초기화하기 위한 키 세대 값
-if "uploader_gen" not in st.session_state:
-    st.session_state.uploader_gen = 0
-
 st.set_page_config(
     page_title="알찬학원 신다혜 쌤의 1:1 수학 클리닉",
     page_icon="✏️",
-    layout="centered",
-    initial_sidebar_state="collapsed",
+    layout="wide",
+    initial_sidebar_state="collapsed",  # 사이드바 완전 제거
 )
 
-MODE_STEP = "❓ 아예 모르겠어요 (스텝 튜터링)"
-MODE_REVIEW = "✍️ 내 풀이 검토 (문제 + 연습장)"
-
-
-def go_home():
-    """처음 상태로 되돌린다: 대화·업로드·모드 선택 전체 초기화."""
-    st.session_state.messages = []
-    st.session_state.last_upload_key = None
-    st.session_state.mode = None
-    st.session_state.uploader_gen += 1
-    st.rerun()
-
-# API 키 자동 로드
+# API 키 및 인증 코드 로드
 try:
     api_key = st.secrets["ANTHROPIC_API_KEY"]
 except Exception:
     api_key = None
 
-# 알찬학원 학생 전용 인증 코드
 try:
     STUDENT_CODE = st.secrets["STUDENT_CODE"]
 except Exception:
     STUDENT_CODE = "alchan1234"
 
 
-# 🎨 커스텀 CSS (피드백 카드 글씨 쨍하게 & 깔끔한 스타일)
+# 🎨 커스텀 CSS (선명한 디자인 + 사이드바 숨김 + 반응형 수식)
 def inject_custom_css():
     st.markdown(
         '''
@@ -51,78 +33,24 @@ def inject_custom_css():
         font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     }
 
-    .material-symbols-rounded, .material-icons, [data-testid="stIconMaterial"],
-    [data-testid="stSidebarCollapseButton"] span, [data-testid="stSidebarCollapseButton"] svg {
-        font-family: 'Material Symbols Rounded', 'Material Icons' !important;
-    }
-
     .stApp {
         background-color: #F8FAFC;
+    }
+
+    /* 사이드바 완전히 숨기기 */
+    [data-testid="stSidebar"] {
+        display: none;
     }
 
     h1, h2, h3 {
         color: #3A449A !important;
         font-weight: 800 !important;
-    }
-
-    /* 한글 제목이 단어 중간에서 잘리지 않도록 (띄어쓰기 단위로만 줄바꿈) */
-    h1 {
         word-break: keep-all !important;
-        overflow-wrap: break-word !important;
-        line-height: 1.25 !important;
-    }
-    @media (max-width: 640px) {
-        h1 { font-size: 1.6rem !important; }
     }
 
-    /* 모드 선택 카드: 메인 화면 버튼을 크고 누르기 쉽게 (모바일 최적화) */
-    .st-key-pick_step .stButton > button,
-    .st-key-pick_review .stButton > button,
-    .st-key-pick_step button,
-    .st-key-pick_review button {
-        white-space: pre-line !important;
-        min-height: 140px !important;
-        height: 100% !important;
-        border: 2px solid #E2E8F0 !important;
-        border-radius: 16px !important;
-        padding: 1rem !important;
-        font-size: 1rem !important;
-        line-height: 1.5 !important;
-        box-shadow: 0 4px 12px rgba(58, 68, 154, 0.06) !important;
-    }
-    .st-key-pick_step .stButton > button:hover,
-    .st-key-pick_review .stButton > button:hover,
-    .st-key-pick_step button:hover,
-    .st-key-pick_review button:hover {
-        border-color: #00A19D !important;
-        background-color: #F0FDFA !important;
-        color: #0F172A !important;
-    }
-
-    section[data-testid="stSidebar"] {
-        background-color: #FFFFFF !important;
-        border-right: 1px solid #E2E8F0;
-    }
-
-    .guide-box {
-        background-color: #FFFFFF;
-        border: 2px solid #3A449A;
-        border-radius: 12px;
-        padding: 1rem 1.2rem;
-        margin-bottom: 1.5rem;
-        box-shadow: 0 4px 10px rgba(58, 68, 154, 0.05);
-    }
-    .guide-title {
-        color: #3A449A;
-        font-weight: 800;
-        font-size: 1.05rem;
-        margin-bottom: 0.5rem;
-    }
-    .guide-item {
-        color: #1E293B;
-        font-size: 0.95rem;
-        margin-bottom: 0.3rem;
-        line-height: 1.5;
+    h1 {
+        font-size: clamp(1.25rem, 3.5vw, 1.75rem) !important;
+        line-height: 1.35 !important;
     }
 
     blockquote {
@@ -151,13 +79,16 @@ def inject_custom_css():
         border-radius: 8px !important;
         font-weight: 600 !important;
         box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05) !important;
-        transition: all 0.2s ease !important;
     }
 
-    .stButton > button:hover {
-        border-color: #3A449A !important;
-        color: #3A449A !important;
-        background-color: #F8FAFC !important;
+    .mode-card {
+        background-color: #FFFFFF;
+        border: 2px solid #E2E8F0;
+        border-radius: 14px;
+        padding: 1.5rem;
+        text-align: center;
+        margin-bottom: 1rem;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
     }
 
     .katex-display {
@@ -175,61 +106,38 @@ def inject_custom_css():
 inject_custom_css()
 
 
+# 안전하게 response 텍스트만 추출하는 함수
 def get_response_text(response):
-    """response.content 안에서 TextBlock의 text만 안전하게 추출한다.
-
-    ThinkingBlock 등 text 속성이 없는 블록은 건너뛰므로 인덱싱 에러가 나지 않는다.
-    """
-    parts = []
-    for block in getattr(response, "content", []) or []:
-        if getattr(block, "type", None) == "text" and getattr(block, "text", None):
-            parts.append(block.text)
-    return "\n".join(parts).strip()
-
-
-def clean_thinking_tags(text):
-    cleaned = re.sub(
-        r"<thinking>.*?</thinking>",
-        "",
-        text,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-    cleaned = re.sub(
-        r"<thinking>.*$", "", cleaned, flags=re.DOTALL | re.IGNORECASE
-    )
+    text_parts = []
+    for block in response.content:
+        if hasattr(block, "text"):
+            text_parts.append(block.text)
+    full_text = "\n".join(text_parts)
+    cleaned = re.sub(r"<thinking>.*?</thinking>", "", full_text, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<thinking>.*$", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
     return cleaned.strip()
 
 
 def load_system_prompt():
+    default_prompt = (
+        "너는 친절하고 실력 있는 알찬학원 수학 강사 신다혜 선생님이다.\n\n"
+        "[강력 수식 & LaTeX 규칙 - 필수 준수]\n"
+        "1. 모든 수학 공식, 수식, 변수(x, y, a, b 등), 숫자 식, 방정식, 기호는 예외 없이 100% LaTeX 표기법(`$ ... $` 또는 `$$ ... $$`)으로 작성해라.\n"
+        "2. 분수를 작성할 때 가로 형태(1/2, a/b)는 절대 사용하지 말고, 반드시 문제집처럼 세로 분수 형태인 `\\dfrac{a}{b}`를 사용해라.\n"
+        "   - 예시: 1/2 대신 $\\dfrac{1}{2}$, 3/4 대신 $\\dfrac{3}{4}$\n"
+        "3. 학생이 스스로 생각할 수 있도록 친근한 다혜 쌤 톤으로 차근차근 질문을 건네며 이끌어줘라."
+    )
     try:
         with open("system_prompt.txt", "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
-        return "너는 친절한 수학 강사 신다혜 선생님이다."
+        return default_prompt
 
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
-_title_col, _home_col = st.columns([5, 1])
-with _title_col:
-    st.title("✏️ 알찬학원 신다혜 쌤의 1:1 수학 클리닉")
-with _home_col:
-    st.write("")
-    if st.button("🏠 처음으로", use_container_width=True, key="home_top"):
-        go_home()
-
-# 안내 메세지
-st.markdown(
-    '''
-<div class="guide-box">
-    <div class="guide-title">💡 클리닉 이용 안내 (필요한 모드를 선택해 주세요!)</div>
-    <div class="guide-item">❓ <b>아예 모르겠어요:</b> 문제 사진 1장만 올려주세요! 다혜 쌤이 스텝별 유도 질문으로 풀 수 있게 도와줄게요.</div>
-    <div class="guide-item">✍️ <b>내 풀이 검토 (연습장):</b> 문제 사진 + 연습장 풀이 사진 2장을 올려주세요! 정확한 오답 위치를 지적해 줄게요.</div>
-</div>
-''',
-    unsafe_allow_html=True,
-)
+st.title("✏️ 알찬학원 신다혜 쌤의 1:1 수학 클리닉")
 
 if not st.session_state.authenticated:
     st.markdown("---")
@@ -247,85 +155,107 @@ if not st.session_state.authenticated:
             st.error("비밀번호가 올바르지 않습니다. 신다혜 쌤에게 문의해 주세요!")
     st.stop()
 
+# 세션 상태 초기화
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "selected_mode" not in st.session_state:
+    st.session_state.selected_mode = None
 if "last_upload_key" not in st.session_state:
     st.session_state.last_upload_key = None
 
 system_prompt = load_system_prompt()
 
-if "mode" not in st.session_state:
-    st.session_state.mode = None
+# -------------------------------------------------------------------
+# 1단계: 첫 페이지 모드 선택 (메인 화면 카드)
+# -------------------------------------------------------------------
+if st.session_state.selected_mode is None:
+    st.markdown("### 💡 어떤 도움이 필요하신가요?")
+    st.caption("아래에서 원하는 방식을 선택해 주세요.")
 
-_gen = st.session_state.uploader_gen
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown(
+            '''
+        <div class="mode-card">
+            <h3>❓ 풀이가 막혔어요</h3>
+            <p style="color: #64748B; font-size: 0.95rem; margin-top: 0.5rem;">
+                <b>문제 사진 1장</b>만 올려주세요!<br/>
+                정답을 바로 주는 대신, <b>스스로 고민해서 답을 찾아갈 수 있게</b> 다혜 쌤이 차근차근 질문을 던져줄게요.
+            </p>
+        </div>
+        ''',
+            unsafe_allow_html=True,
+        )
+        if st.button("❓ 스스로 풀어보기 시작", use_container_width=True, key="btn_mode1"):
+            st.session_state.selected_mode = "❓ 스스로 풀어보기 (차근차근 질문)"
+            st.rerun()
+
+    with col2:
+        st.markdown(
+            '''
+        <div class="mode-card">
+            <h3>✍️ 내 풀이 검토</h3>
+            <p style="color: #64748B; font-size: 0.95rem; margin-top: 0.5rem;">
+                <b>문제 + 연습장 풀이 2장</b>을 올려주세요!<br/>
+                잘 접근한 부분과 어디서 계산/개념이 삐끗했는지 오답을 콕 짚어 줄게요.
+            </p>
+        </div>
+        ''',
+            unsafe_allow_html=True,
+        )
+        if st.button("✍️ 오답 검토 클리닉 시작", use_container_width=True, key="btn_mode2"):
+            st.session_state.selected_mode = "✍️ 내 풀이 검토 (문제 + 연습장)"
+            st.rerun()
+
+    st.stop()
+
+# -------------------------------------------------------------------
+# 2단계: 모드 선택 후 (사진 업로드 + 대화)
+# -------------------------------------------------------------------
+mode = st.session_state.selected_mode
+
+top_col1, top_col2 = st.columns([3, 1])
+with top_col1:
+    st.markdown(f"#### 📌 선택한 모드: **{mode}**")
+with top_col2:
+    if st.button("🔄 다른 문제 선택하기", use_container_width=True):
+        st.session_state.selected_mode = None
+        st.session_state.messages = []
+        st.session_state.last_upload_key = None
+        st.rerun()
+
+st.markdown("---")
+
 uploaded_problem = None
 uploaded_solution = None
 
-# --- 모드 선택 카드 (메인 화면: 모바일에서도 사이드바 없이 바로 선택) ---
-if st.session_state.mode is None:
-    st.markdown("---")
-    st.markdown("#### 어떤 도움이 필요한가요?")
-    pick_a, pick_b = st.columns(2)
-    with pick_a:
-        if st.button(
-            "❓ 아예 모르겠어요\n\n문제 사진 1장을 올리면\n스텝별 유도 질문으로 도와줘요",
-            use_container_width=True,
-            key="pick_step",
-        ):
-            st.session_state.mode = MODE_STEP
-            st.rerun()
-    with pick_b:
-        if st.button(
-            "✍️ 내 풀이 검토\n\n문제 + 연습장 풀이 2장을 올리면\n오답 지점을 콕 짚어줘요",
-            use_container_width=True,
-            key="pick_review",
-        ):
-            st.session_state.mode = MODE_REVIEW
-            st.rerun()
-    st.stop()
-
-mode = st.session_state.mode
-
-# --- 선택된 모드: 업로드 영역 (메인 화면) ---
-st.markdown("---")
-head_l, head_r = st.columns([3, 1])
-with head_l:
-    st.markdown(f"**현재 모드**  \n{mode}")
-with head_r:
-    if st.button("↩ 모드 변경", use_container_width=True, key="change_mode"):
-        go_home()
-
-if mode == MODE_STEP:
-    st.caption("📌 **문제 사진 1장**을 올려주세요.")
+if mode == "❓ 스스로 풀어보기 (차근차근 질문)":
+    st.caption("📷 **문제 사진 1장**을 업로드해 주세요.")
     uploaded_problem = st.file_uploader(
-        "문제 사진 업로드", type=["jpg", "jpeg", "png"], key=f"prob_only_{_gen}"
+        "문제 사진 첨부", type=["jpg", "jpeg", "png"], key="prob_only"
     )
-    if uploaded_problem:
-        st.image(uploaded_problem, caption="📷 문제 사진", use_container_width=True)
 else:
-    st.caption("📌 **문제 사진 1장**과 **연습장 풀이 사진 1장**을 각각 올려주세요.")
-    up_p, up_s = st.columns(2)
-    with up_p:
+    st.caption("📷 **문제 사진**과 **연습장 풀이 사진** 2장을 각각 첨부해 주세요.")
+    up_col1, up_col2 = st.columns(2)
+    with up_col1:
         uploaded_problem = st.file_uploader(
-            "1️⃣ 문제 사진", type=["jpg", "jpeg", "png"], key=f"prob_dual_{_gen}"
+            "1️⃣ 문제 사진 업로드", type=["jpg", "jpeg", "png"], key="prob_dual"
         )
-        if uploaded_problem:
-            st.image(uploaded_problem, caption="📷 문제 사진", use_container_width=True)
-    with up_s:
+    with up_col2:
         uploaded_solution = st.file_uploader(
-            "2️⃣ 연습장 풀이 사진", type=["jpg", "jpeg", "png"], key=f"sol_dual_{_gen}"
+            "2️⃣ 연습장 풀이 사진 업로드", type=["jpg", "jpeg", "png"], key="sol_dual"
         )
-        if uploaded_solution:
-            st.image(uploaded_solution, caption="✍️ 연습장 풀이 사진", use_container_width=True)
 
-# 업로드 상태 변경 식별키 생성
 prob_id = uploaded_problem.file_id if uploaded_problem else "none"
 sol_id = uploaded_solution.file_id if uploaded_solution else "none"
 curr_upload_key = f"{mode}_{prob_id}_{sol_id}"
 
-# 새로운 업로드가 발생했을 때 대화 자동 시작
+MODEL_NAME = "claude-sonnet-4-5"
+
+# 사진 업로드 시 자동 분석 시작
 if api_key and (curr_upload_key != st.session_state.last_upload_key):
-    if mode == MODE_STEP and uploaded_problem:
+    if mode == "❓ 스스로 풀어보기 (차근차근 질문)" and uploaded_problem:
         st.session_state.last_upload_key = curr_upload_key
         st.session_state.messages = []
 
@@ -344,19 +274,19 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
             },
             {
                 "type": "text",
-                "text": "[모드: 아예 모르겠어요] 학생이 문제를 어떻게 풀어야 할지 몰라 문제 사진 1장만 올렸어. 정답이나 전체 풀이를 바로 알려주지 말고, 신다혜 쌤 톤으로 스텝 1 유도 질문만 전달해줘.",
+                "text": "[모드: 스스로 풀어보기] 학생이 풀다가 막혀서 문제 사진을 올렸어. 정답이나 전체 풀이를 바로 주지 말고, 스스로 고민해서 답을 찾을 수 있게 첫 번째 질문만 건네줘. (모든 수식/변수/분수는 예외 없이 $ ... $ LaTeX 세로 분수 \\dfrac{a}{b} 사용 필수)",
             },
         ]
 
         with st.spinner("다혜 쌤이 문제를 꼼꼼하게 살피는 중입니다..."):
             try:
                 response = client.messages.create(
-                    model="claude-sonnet-4-5",
+                    model=MODEL_NAME,
                     max_tokens=2000,
                     system=system_prompt,
                     messages=[{"role": "user", "content": content_blocks}],
                 )
-                bot_reply = clean_thinking_tags(get_response_text(response))
+                bot_reply = get_response_text(response)
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
@@ -364,7 +294,7 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
 
-    elif mode == MODE_REVIEW and uploaded_problem and uploaded_solution:
+    elif mode == "✍️ 내 풀이 검토 (문제 + 연습장)" and uploaded_problem and uploaded_solution:
         st.session_state.last_upload_key = curr_upload_key
         st.session_state.messages = []
 
@@ -395,19 +325,19 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
             },
             {
                 "type": "text",
-                "text": "[모드: 내 풀이 검토] 첫 번째 사진은 '문제'이고 두 번째 사진은 학생의 '연습장 풀이'야. 연습장 풀이를 대조해서 잘 접근한 부분과 계산/개념이 삐끗한 오답 지점을 정확하게 지적해줘.",
+                "text": "[모드: 내 풀이 검토] 문제 사진과 연습장 풀이 사진이야. 연습장 풀이를 대조해서 잘 접근한 부분과 실수한 오답 지점을 지적해줘. (모든 수식/변수/분수는 예외 없이 $ ... $ LaTeX 세로 분수 \\dfrac{a}{b} 사용 필수)",
             },
         ]
 
         with st.spinner("다혜 쌤이 문제와 연습장 풀이를 대조 분석하는 중입니다..."):
             try:
                 response = client.messages.create(
-                    model="claude-sonnet-4-5",
+                    model=MODEL_NAME,
                     max_tokens=2000,
                     system=system_prompt,
                     messages=[{"role": "user", "content": content_blocks}],
                 )
-                bot_reply = clean_thinking_tags(get_response_text(response))
+                bot_reply = get_response_text(response)
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
@@ -420,8 +350,8 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 답장 입력 처리
-if prompt := st.chat_input("다혜 쌤에게 답장하기 (예: 1단계 정답은 18이에요!)"):
+# 대화 입력
+if prompt := st.chat_input("다혜 쌤에게 답장하기 (예: 정답은 \\dfrac{1}{2} 같아요!)"):
     if not api_key:
         st.error("API 키가 설정되지 않았습니다.")
         st.stop()
@@ -435,7 +365,7 @@ if prompt := st.chat_input("다혜 쌤에게 답장하기 (예: 1단계 정답�
 
     for idx, msg in enumerate(st.session_state.messages):
         if idx == 0:
-            if mode == MODE_STEP and uploaded_problem:
+            if mode == "❓ 스스로 풀어보기 (차근차근 질문)" and uploaded_problem:
                 uploaded_problem.seek(0)
                 content_blocks = [
                     {
@@ -449,7 +379,7 @@ if prompt := st.chat_input("다혜 쌤에게 답장하기 (예: 1단계 정답�
                     {"type": "text", "text": msg["content"]},
                 ]
                 api_messages.append({"role": "user", "content": content_blocks})
-            elif mode == MODE_REVIEW and uploaded_problem and uploaded_solution:
+            elif mode == "✍️ 내 풀이 검토 (문제 + 연습장)" and uploaded_problem and uploaded_solution:
                 uploaded_problem.seek(0)
                 uploaded_solution.seek(0)
                 content_blocks = [
@@ -481,12 +411,12 @@ if prompt := st.chat_input("다혜 쌤에게 답장하기 (예: 1단계 정답�
         with st.spinner("생각 중..."):
             try:
                 response = client.messages.create(
-                    model="claude-sonnet-4-5",
+                    model=MODEL_NAME,
                     max_tokens=2000,
                     system=system_prompt,
                     messages=api_messages,
                 )
-                bot_reply = clean_thinking_tags(get_response_text(response))
+                bot_reply = get_response_text(response)
                 st.markdown(bot_reply)
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
