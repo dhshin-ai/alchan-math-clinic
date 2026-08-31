@@ -1,7 +1,6 @@
-import ast
 import base64
-import math
 import re
+import ast
 import anthropic
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -32,15 +31,20 @@ def inject_custom_css():
     <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
 
-    /* 이모지 및 전체 폰트 설정 (이모지 깨짐 완벽 방지) */
-    html, body, [class*="st-"], button, button *, input, textarea, select, span, div, p {
-        font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji" !important;
+    /* 1. 기본 폰트 설정 */
+    html, body, .stApp {
+        font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    /* 2. Streamlit 아이콘 폰트 보호 (아이콘이 'upload' 글자로 렌더링되는 현상 차단) */
+    [data-testid="stIcon"], i, [class*="icon"], [class*="material"] {
+        font-family: inherit !important;
     }
 
     .stApp {
         background-color: #F8FAFC;
     }
-
+    
     /* 사이드바 완전히 숨기기 */
     [data-testid="stSidebar"] {
         display: none;
@@ -57,6 +61,7 @@ def inject_custom_css():
         line-height: 1.35 !important;
     }
 
+    /* 상단 안내 상자 */
     .guide-box {
         background-color: #FFFFFF;
         border: 2px solid #3A449A;
@@ -97,23 +102,9 @@ def inject_custom_css():
         color: #000000 !important;
     }
 
-    div.stButton > button {
-        border-radius: 10px !important;
-        font-weight: 700 !important;
-    }
-
-    /* 파일 업로더 내 버튼 예외 처리 (대형 카드 스타일 상속 방지) */
-    div[data-testid="stFileUploader"] button {
-        min-height: unset !important;
-        padding: 0.4rem 0.8rem !important;
-        font-size: 0.875rem !important;
-    }
-
-    /* 💡 메인 2개 모드 선택 대형 카드 버튼 (100% 선명 및 크기 보장) */
+    /* 💡 메인 2개 모드 선택 대형 카드 버튼에만 충실하게 적용 (기타 버튼에 영향 금지) */
     div[data-testid="stKey-btn_mode1"] button,
-    div[data-testid="stKey-btn_mode2"] button,
-    div.stButton > button[data-testid="stBaseButton-primary"],
-    div.stButton > button[kind="primary"] {
+    div[data-testid="stKey-btn_mode2"] button {
         width: 100% !important;
         min-height: 190px !important;
         white-space: pre-wrap !important;
@@ -131,14 +122,19 @@ def inject_custom_css():
     }
 
     div[data-testid="stKey-btn_mode1"] button:hover,
-    div[data-testid="stKey-btn_mode2"] button:hover,
-    div.stButton > button[data-testid="stBaseButton-primary"]:hover,
-    div.stButton > button[kind="primary"]:hover {
+    div[data-testid="stKey-btn_mode2"] button:hover {
         border-color: #3A449A !important;
         color: #3A449A !important;
         background-color: #F1F5F9 !important;
         box-shadow: 0 8px 20px rgba(58, 68, 154, 0.15) !important;
         transform: translateY(-2px) !important;
+    }
+
+    /* 파일 업로더 상자 예쁘고 깔끔하게 원복 */
+    [data-testid="stFileUploader"] {
+        background-color: #FFFFFF;
+        border-radius: 12px;
+        padding: 0.6rem;
     }
 
     .katex-display {
@@ -167,88 +163,51 @@ def get_response_text(response):
     return cleaned.strip()
 
 
-# -------------------------------------------------------------------
-# 🔒 도형 코드 안전 실행 (AST 화이트리스트)
-#    - 모델이 생성한 ```python 블록을 그대로 exec 하지 않고, 먼저 구문 트리를
-#      검사해서 그리기(matplotlib/numpy/patches)에 필요한 노드만 통과시킨다.
-#    - import, 던더(__) 이름·속성, 임의 함수 호출, 거대한 상수/지수 등은 차단.
-# -------------------------------------------------------------------
-class UnsafeDiagramCode(Exception):
-    pass
+def is_safe_matplotlib_code(code_str):
+    """모델이 생성한 도형 코드를 exec 하기 전 AST 화이트리스트로 검증한다.
 
+    - import 문 금지
+    - 밑줄(_)로 시작하는 모든 속성 접근 금지 (__getattribute__/__class__ 등 우회 차단)
+    - 던더 이름 금지, 파일/OS/네트워크 관련 속성 금지
+    - 허용된 내장 함수 외의 이름 호출 금지 (getattr/eval/exec/open 등 차단)
+    - 500만 초과 숫자 상수 금지 (메모리 폭탄 방지)
+    """
+    try:
+        tree = ast.parse(code_str)
+    except Exception:
+        return False
 
-_SAFE_BUILTINS = {
-    "range": range, "len": len, "enumerate": enumerate, "zip": zip,
-    "min": min, "max": max, "abs": abs, "sum": sum, "round": round,
-    "list": list, "tuple": tuple, "dict": dict, "set": set,
-    "float": float, "int": int, "str": str, "bool": bool,
-    "sorted": sorted, "reversed": reversed, "map": map, "filter": filter,
-}
+    allowed_call_names = {
+        "range", "len", "enumerate", "zip", "min", "max", "abs", "sum", "round",
+        "list", "tuple", "dict", "set", "float", "int", "str", "bool",
+        "sorted", "reversed", "map", "filter",
+    }
+    denied_attrs = {
+        "secrets", "environ", "system", "popen", "getenv", "putenv", "savefig",
+        "communicate", "check_output", "check_call", "run", "Popen",
+        "read", "write", "open", "remove", "unlink", "rename",
+        "load", "loads", "connect", "urlopen", "request",
+    }
 
-_DENY_ATTRS = {
-    "savefig", "secrets", "environ", "system", "popen", "getenv", "putenv",
-    "read", "write", "open", "remove", "unlink", "rename", "communicate",
-    "call", "check_output", "check_call", "run", "Popen", "eval", "exec",
-    "load", "loads", "connect", "urlopen", "request",
-}
-
-_ALLOWED_NODES = (
-    ast.Module, ast.Expr, ast.Assign, ast.AugAssign, ast.AnnAssign,
-    ast.For, ast.If, ast.IfExp, ast.Pass, ast.Break, ast.Continue,
-    ast.Call, ast.keyword, ast.Attribute, ast.Name, ast.Load, ast.Store, ast.Del,
-    ast.Constant, ast.FormattedValue, ast.JoinedStr,
-    ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare,
-    ast.List, ast.Tuple, ast.Dict, ast.Set, ast.Subscript, ast.Slice, ast.Starred,
-    ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp, ast.comprehension,
-    ast.And, ast.Or, ast.Not, ast.USub, ast.UAdd, ast.Invert,
-    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
-    ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
-    ast.Is, ast.IsNot, ast.In, ast.NotIn,
-)
-_ALLOWED_NODES += tuple(
-    getattr(ast, _n) for _n in ("Index", "ExtSlice", "Num", "Str", "NameConstant", "Bytes")
-    if hasattr(ast, _n)
-)
-
-
-def _validate_diagram_ast(tree):
-    nodes = list(ast.walk(tree))
-    if len(nodes) > 2500:
-        raise UnsafeDiagramCode("코드가 너무 깁니다")
-    for node in nodes:
-        if not isinstance(node, _ALLOWED_NODES):
-            raise UnsafeDiagramCode(f"허용되지 않은 구문: {type(node).__name__}")
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            return False
         if isinstance(node, ast.Attribute):
-            if node.attr.startswith("_") or node.attr in _DENY_ATTRS:
-                raise UnsafeDiagramCode(f"허용되지 않은 속성: {node.attr}")
+            if node.attr.startswith("_") or node.attr in denied_attrs:
+                return False
         if isinstance(node, ast.Name) and node.id.startswith("__"):
-            raise UnsafeDiagramCode("던더 이름 접근 금지")
-        if isinstance(node, ast.Constant):
-            if isinstance(node.value, (int, float)) and abs(node.value) > 5_000_000:
-                raise UnsafeDiagramCode("숫자 상수가 너무 큽니다")
+            return False
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id not in allowed_call_names:
+                return False
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            if abs(node.value) > 5_000_000:
+                return False
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
             rhs = node.right
             if isinstance(rhs, ast.Constant) and isinstance(rhs.value, (int, float)) and rhs.value > 8:
-                raise UnsafeDiagramCode("지수가 너무 큽니다")
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id not in _SAFE_BUILTINS:
-                raise UnsafeDiagramCode(f"허용되지 않은 함수 호출: {node.func.id}")
-
-
-def run_diagram_code(code):
-    """AST 검증을 통과한 코드만 제한된 스코프에서 실행하고 Figure를 반환."""
-    tree = ast.parse(code, mode="exec")
-    _validate_diagram_ast(tree)
-    scope = {
-        "__builtins__": _SAFE_BUILTINS,
-        "plt": plt, "np": np, "patches": patches, "math": math,
-    }
-    plt.close("all")
-    exec(compile(tree, "<diagram>", "exec"), scope)  # noqa: S102 - AST 화이트리스트 검증 후 실행
-    fig = scope.get("fig")
-    if fig is None:
-        fig = plt.gcf()
-    return fig
+                return False
+    return True
 
 
 def render_assistant_content(content):
@@ -259,25 +218,19 @@ def render_assistant_content(content):
         if i % 2 == 0:
             if part.strip():
                 st.markdown(part)
-            continue
-
-        code = part.strip()
-        if not any(tok in code for tok in ("plt.", "fig", "patches.", "ax.")):
-            st.code(code, language="python")
-            continue
-
-        try:
-            fig = run_diagram_code(code)
-            if fig is not None and len(fig.axes) > 0:
-                st.pyplot(fig)
-            plt.close("all")
-        except UnsafeDiagramCode as e:
-            plt.close("all")
-            st.warning(f"⚠️ 안전하지 않은 그림 코드라서 실행하지 않았어요: {e}")
-            st.code(code, language="python")
-        except Exception:
-            plt.close("all")
-            st.code(code, language="python")
+        else:
+            code = part.strip()
+            if ("plt." in code or "fig" in code) and is_safe_matplotlib_code(code):
+                try:
+                    plt.close("all")
+                    local_scope = {"plt": plt, "np": np, "patches": patches}
+                    exec(code, {"__builtins__": {}}, local_scope)
+                    fig = local_scope.get("fig", plt.gcf())
+                    if fig and len(fig.axes) > 0:
+                        st.pyplot(fig)
+                        plt.close("all")
+                except Exception:
+                    pass
 
 
 def load_system_prompt():
@@ -350,7 +303,7 @@ if st.session_state.selected_mode is None:
             "정답 대신 스스로 답을 찾아갈 수 있게\n"
             "다혜 쌤이 차근차근 질문을 던져줄게요!"
         )
-        if st.button(btn1_text, key="btn_mode1", use_container_width=True, type="primary"):
+        if st.button(btn1_text, key="btn_mode1", use_container_width=True):
             st.session_state.selected_mode = "❓ 스스로 풀어보기 (차근차근 질문)"
             st.rerun()
 
@@ -361,7 +314,7 @@ if st.session_state.selected_mode is None:
             "잘 접근한 부분과 어디서 개념/계산이\n"
             "삐끗했는지 오답 위치를 콕 짚어줄게요!"
         )
-        if st.button(btn2_text, key="btn_mode2", use_container_width=True, type="primary"):
+        if st.button(btn2_text, key="btn_mode2", use_container_width=True):
             st.session_state.selected_mode = "✍️ 내 풀이 검토 (문제 + 연습장)"
             st.rerun()
 
