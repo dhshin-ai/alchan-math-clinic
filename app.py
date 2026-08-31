@@ -16,54 +16,64 @@ try:
 except Exception:
     api_key = None
 
-# 알찬학원 학생 전용 인증 코드 (secrets에서 설정하거나 기본값 사용)
+# 알찬학원 학생 전용 인증 코드
 try:
     STUDENT_CODE = st.secrets["STUDENT_CODE"]
 except Exception:
-    STUDENT_CODE = "alchan1234"  # 기본 인증코드 (필요시 변경 가능)
+    STUDENT_CODE = "alchan1234"
 
 
-# 🎨 #3A449A 및 #00A19D 커스텀 CSS
+# 🎨 커스텀 CSS (피드백 카드 글씨 쨍하게 & 깔끔한 스타일)
 def inject_custom_css():
     st.markdown(
-        """
+        '''
     <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
 
-    /* 1. 폰트 충돌 방지: 아이콘이 깨지지 않도록 일반 텍스트 요소에만 폰트 적용 */
     html, body, [class*="st-"] {
         font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     }
 
-    /* Streamlit 기본 아이콘(화살표, 링크 등) 폰트 강제 원복 */
     .material-symbols-rounded, .material-icons, [data-testid="stIconMaterial"],
     [data-testid="stSidebarCollapseButton"] span, [data-testid="stSidebarCollapseButton"] svg {
         font-family: 'Material Symbols Rounded', 'Material Icons' !important;
-    }
-
-    /* 2. 글씨 색상 뚜렷하게 (회색빛 제거) */
-    p, li, span, div, .stMarkdown {
-        color: #111827 !important; /* 거의 검은색에 가까운 진한 색 */
     }
 
     .stApp {
         background-color: #F8FAFC;
     }
 
-    /* 타이틀 및 헤더 메인 컬러 (#3A449A) */
-    h1 {
+    h1, h2, h3 {
         color: #3A449A !important;
         font-weight: 800 !important;
-        letter-spacing: -0.02em;
     }
 
-    /* 사이드바 스타일링 */
     section[data-testid="stSidebar"] {
         background-color: #FFFFFF !important;
         border-right: 1px solid #E2E8F0;
     }
 
-    /* 회색 인용문(>)을 알찬학원 메인 컬러 브랜드 카드로 변경 */
+    .guide-box {
+        background-color: #FFFFFF;
+        border: 2px solid #3A449A;
+        border-radius: 12px;
+        padding: 1rem 1.2rem;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 4px 10px rgba(58, 68, 154, 0.05);
+    }
+    .guide-title {
+        color: #3A449A;
+        font-weight: 800;
+        font-size: 1.05rem;
+        margin-bottom: 0.5rem;
+    }
+    .guide-item {
+        color: #1E293B;
+        font-size: 0.95rem;
+        margin-bottom: 0.3rem;
+        line-height: 1.5;
+    }
+
     blockquote {
         background-color: #FFFFFF !important;
         border-left: 5px solid #00A19D !important;
@@ -73,24 +83,16 @@ def inject_custom_css():
         margin: 1.2rem 0 !important;
     }
 
-    /* 피드백 카드 안의 회색빛 완전 제거 -> 쨍한 검은색 강제 적용 */
     blockquote *, blockquote p, blockquote li, blockquote span, blockquote div {
         color: #000000 !important;
         font-weight: 500 !important;
         opacity: 1 !important;
     }
 
-    /* 채팅 메세지 스타일링 */
-    .stChatMessage {
-        background-color: #FFFFFF !important;
-        border-radius: 16px !important;
-        padding: 1.25rem !important;
-        border: 1px solid #E2E8F0 !important;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.02) !important;
+    .stChatMessage, .stChatMessage * {
         color: #000000 !important;
     }
 
-    /* 버튼 디자인: 깔끔한 백색/테두리 스타일로 원복 */
     .stButton > button {
         background-color: #FFFFFF !important;
         color: #1F2937 !important;
@@ -107,32 +109,31 @@ def inject_custom_css():
         background-color: #F8FAFC !important;
     }
 
-    /* 수식 블록 배경 */
     .katex-display {
         background-color: #F1F5F9;
         padding: 0.5rem;
         border-radius: 8px;
         color: #000000 !important;
     }
-
-    /* 제목 옆 앵커 링크 및 Material Symbol 텍스트 완벽 차단 */
-    a.header-anchor,
-    [data-testid="stHeaderActionElements"],
-    .stMarkdown h1 a, .stMarkdown h2 a, .stMarkdown h3 a {
-        display: none !important;
-        visibility: hidden !important;
-        pointer-events: none !important;
-        width: 0 !important;
-        height: 0 !important;
-        font-size: 0 !important;
-    }
     </style>
-    """,
+    ''',
         unsafe_allow_html=True,
     )
 
 
 inject_custom_css()
+
+
+def get_response_text(response):
+    """response.content 안에서 TextBlock의 text만 안전하게 추출한다.
+
+    ThinkingBlock 등 text 속성이 없는 블록은 건너뛰므로 인덱싱 에러가 나지 않는다.
+    """
+    parts = []
+    for block in getattr(response, "content", []) or []:
+        if getattr(block, "type", None) == "text" and getattr(block, "text", None):
+            parts.append(block.text)
+    return "\n".join(parts).strip()
 
 
 def clean_thinking_tags(text):
@@ -156,18 +157,23 @@ def load_system_prompt():
         return "너는 친절한 수학 강사 신다혜 선생님이다."
 
 
-# ---------------------------------------------------------
-# 🔑 알찬학원 수강생 전용 인증 모듈
-# ---------------------------------------------------------
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
 st.title("✏️ 알찬학원 신다혜 쌤의 1:1 수학 클리닉")
-st.caption(
-    "막히는 문제나 내 풀이를 올리면 다혜 쌤이 어디가 틀렸는지 콕 짚어 줄게요!"
+
+# 안내 메세지
+st.markdown(
+    '''
+<div class="guide-box">
+    <div class="guide-title">💡 클리닉 이용 안내 (필요한 모드를 선택해 주세요!)</div>
+    <div class="guide-item">❓ <b>아예 모르겠어요:</b> 문제 사진 1장만 올려주세요! 다혜 쌤이 스텝별 유도 질문으로 풀 수 있게 도와줄게요.</div>
+    <div class="guide-item">✍️ <b>내 풀이 검토 (연습장):</b> 문제 사진 + 연습장 풀이 사진 2장을 올려주세요! 정확한 오답 위치를 지적해 줄게요.</div>
+</div>
+''',
+    unsafe_allow_html=True,
 )
 
-# 미인증 상태일 때 인증 화면 표시
 if not st.session_state.authenticated:
     st.markdown("---")
     st.subheader("🔒 알찬학원 수강생 전용 로그인")
@@ -184,87 +190,158 @@ if not st.session_state.authenticated:
             st.error("비밀번호가 올바르지 않습니다. 신다혜 쌤에게 문의해 주세요!")
     st.stop()
 
-# ---------------------------------------------------------
-# 🎓 메인 클리닉 앱 영역 (인증 완료 후만 실행됨)
-# ---------------------------------------------------------
-
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "last_file_id" not in st.session_state:
-    st.session_state.last_file_id = None
+if "last_upload_key" not in st.session_state:
+    st.session_state.last_upload_key = None
 
+system_prompt = load_system_prompt()
+
+# 사이드바에서 2개의 모드(탭) 선택
 with st.sidebar:
     st.header("📸 문제 & 풀이 업로드")
-    st.info("💡 알찬학원 수강생은 무료로 자유롭게 이용할 수 있습니다.")
-
-    uploaded_file = st.file_uploader(
-        "문제 사진 (손글씨 풀이 포함 가능)", type=["jpg", "jpeg", "png"]
+    mode = st.radio(
+        "어떤 진단을 받고 싶나요?",
+        ["❓ 아예 모르겠어요 (스텝 튜터링)", "✍️ 내 풀이 검토 (문제 + 연습장)"],
     )
 
-    if uploaded_file:
-        st.image(
-            uploaded_file, caption="📌 현재 검토 중인 사진", use_container_width=True
+    uploaded_problem = None
+    uploaded_solution = None
+
+    if mode == "❓ 아예 모르겠어요 (스텝 튜터링)":
+        st.markdown("---")
+        st.caption("📌 **문제 사진 1장**을 올려주세요.")
+        uploaded_problem = st.file_uploader(
+            "문제 사진 업로드", type=["jpg", "jpeg", "png"], key="prob_only"
         )
+        if uploaded_problem:
+            st.image(uploaded_problem, caption="📷 문제 사진", use_container_width=True)
+
+    else:
+        st.markdown("---")
+        st.caption("📌 **문제 사진 1장**과 **연습장 풀이 사진 1장**을 각각 올려주세요.")
+        uploaded_problem = st.file_uploader(
+            "1️⃣ 문제 사진 업로드", type=["jpg", "jpeg", "png"], key="prob_dual"
+        )
+        if uploaded_problem:
+            st.image(uploaded_problem, caption="📷 문제 사진", use_container_width=True)
+
+        uploaded_solution = st.file_uploader(
+            "2️⃣ 연습장 풀이 사진 업로드", type=["jpg", "jpeg", "png"], key="sol_dual"
+        )
+        if uploaded_solution:
+            st.image(uploaded_solution, caption="✍️ 연습장 풀이 사진", use_container_width=True)
 
     st.markdown("---")
     if st.button("🔄 대화 초기화", use_container_width=True):
         st.session_state.messages = []
-        st.session_state.last_file_id = None
+        st.session_state.last_upload_key = None
         st.rerun()
 
-system_prompt = load_system_prompt()
-curr_file_id = uploaded_file.file_id if uploaded_file else None
+# 업로드 상태 변경 식별키 생성
+prob_id = uploaded_problem.file_id if uploaded_problem else "none"
+sol_id = uploaded_solution.file_id if uploaded_solution else "none"
+curr_upload_key = f"{mode}_{prob_id}_{sol_id}"
 
-if uploaded_file and api_key and (curr_file_id != st.session_state.last_file_id):
-    st.session_state.last_file_id = curr_file_id
-    st.session_state.messages = []
+# 새로운 업로드가 발생했을 때 대화 자동 시작
+if api_key and (curr_upload_key != st.session_state.last_upload_key):
+    if mode == "❓ 아예 모르겠어요 (스텝 튜터링)" and uploaded_problem:
+        st.session_state.last_upload_key = curr_upload_key
+        st.session_state.messages = []
 
-    client = anthropic.Anthropic(api_key=api_key)
+        client = anthropic.Anthropic(api_key=api_key)
+        uploaded_problem.seek(0)
+        p_bytes = uploaded_problem.read()
 
-    uploaded_file.seek(0)
-    p_bytes = uploaded_file.read()
-
-    content_blocks = [
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": uploaded_file.type,
-                "data": base64.b64encode(p_bytes).decode("utf-8"),
+        content_blocks = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": uploaded_problem.type,
+                    "data": base64.b64encode(p_bytes).decode("utf-8"),
+                },
             },
-        },
-        {
-            "type": "text",
-            "text": "이 사진을 분석해서 신다혜 쌤의 톤으로 양식에 맞춰 피드백해줘.",
-        },
-    ]
+            {
+                "type": "text",
+                "text": "[모드: 아예 모르겠어요] 학생이 문제를 어떻게 풀어야 할지 몰라 문제 사진 1장만 올렸어. 정답이나 전체 풀이를 바로 알려주지 말고, 신다혜 쌤 톤으로 스텝 1 유도 질문만 전달해줘.",
+            },
+        ]
 
-    api_messages = [{"role": "user", "content": content_blocks}]
+        with st.spinner("다혜 쌤이 문제를 꼼꼼하게 살피는 중입니다..."):
+            try:
+                response = client.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=2000,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": content_blocks}],
+                )
+                bot_reply = clean_thinking_tags(get_response_text(response))
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": bot_reply}
+                )
+                st.rerun()
+            except Exception as e:
+                st.error(f"오류가 발생했습니다: {e}")
 
-    with st.spinner("다혜 쌤이 풀이를 꼼꼼하게 살피는 중입니다..."):
-        try:
-            response = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=2000,
-                system=system_prompt,
-                messages=api_messages,
-            )
-            raw_reply = response.content[0].text
-            bot_reply = clean_thinking_tags(raw_reply)
-            st.session_state.messages.append(
-                {"role": "assistant", "content": bot_reply}
-            )
-            st.rerun()
-        except Exception as e:
-            st.error(f"오류가 발생했습니다: {e}")
+    elif mode == "✍️ 내 풀이 검토 (문제 + 연습장)" and uploaded_problem and uploaded_solution:
+        st.session_state.last_upload_key = curr_upload_key
+        st.session_state.messages = []
 
-# 대화 출력
+        client = anthropic.Anthropic(api_key=api_key)
+
+        uploaded_problem.seek(0)
+        p_bytes = uploaded_problem.read()
+
+        uploaded_solution.seek(0)
+        s_bytes = uploaded_solution.read()
+
+        content_blocks = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": uploaded_problem.type,
+                    "data": base64.b64encode(p_bytes).decode("utf-8"),
+                },
+            },
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": uploaded_solution.type,
+                    "data": base64.b64encode(s_bytes).decode("utf-8"),
+                },
+            },
+            {
+                "type": "text",
+                "text": "[모드: 내 풀이 검토] 첫 번째 사진은 '문제'이고 두 번째 사진은 학생의 '연습장 풀이'야. 연습장 풀이를 대조해서 잘 접근한 부분과 계산/개념이 삐끗한 오답 지점을 정확하게 지적해줘.",
+            },
+        ]
+
+        with st.spinner("다혜 쌤이 문제와 연습장 풀이를 대조 분석하는 중입니다..."):
+            try:
+                response = client.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=2000,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": content_blocks}],
+                )
+                bot_reply = clean_thinking_tags(get_response_text(response))
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": bot_reply}
+                )
+                st.rerun()
+            except Exception as e:
+                st.error(f"오류가 발생했습니다: {e}")
+
+# 채팅 메시지 출력
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 입력 창
-if prompt := st.chat_input("다혜 쌤에게 답장하기 (예: 높이가 18이 나와요!)"):
+# 답장 입력 처리
+if prompt := st.chat_input("다혜 쌤에게 답장하기 (예: 1단계 정답은 18이에요!)"):
     if not api_key:
         st.error("API 키가 설정되지 않았습니다.")
         st.stop()
@@ -277,38 +354,59 @@ if prompt := st.chat_input("다혜 쌤에게 답장하기 (예: 높이가 18이 
     api_messages = []
 
     for idx, msg in enumerate(st.session_state.messages):
-        if idx == 0 and uploaded_file:
-            uploaded_file.seek(0)
-            content_blocks = [
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": uploaded_file.type,
-                        "data": base64.b64encode(
-                            uploaded_file.read()
-                        ).decode("utf-8"),
+        if idx == 0:
+            if mode == "❓ 아예 모르겠어요 (스텝 튜터링)" and uploaded_problem:
+                uploaded_problem.seek(0)
+                content_blocks = [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": uploaded_problem.type,
+                            "data": base64.b64encode(uploaded_problem.read()).decode("utf-8"),
+                        },
                     },
-                },
-                {"type": "text", "text": msg["content"]},
-            ]
-            api_messages.append({"role": "user", "content": content_blocks})
+                    {"type": "text", "text": msg["content"]},
+                ]
+                api_messages.append({"role": "user", "content": content_blocks})
+            elif mode == "✍️ 내 풀이 검토 (문제 + 연습장)" and uploaded_problem and uploaded_solution:
+                uploaded_problem.seek(0)
+                uploaded_solution.seek(0)
+                content_blocks = [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": uploaded_problem.type,
+                            "data": base64.b64encode(uploaded_problem.read()).decode("utf-8"),
+                        },
+                    },
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": uploaded_solution.type,
+                            "data": base64.b64encode(uploaded_solution.read()).decode("utf-8"),
+                        },
+                    },
+                    {"type": "text", "text": msg["content"]},
+                ]
+                api_messages.append({"role": "user", "content": content_blocks})
+            else:
+                api_messages.append({"role": msg["role"], "content": msg["content"]})
         else:
-            api_messages.append(
-                {"role": msg["role"], "content": msg["content"]}
-            )
+            api_messages.append({"role": msg["role"], "content": msg["content"]})
 
     with st.chat_message("assistant"):
         with st.spinner("생각 중..."):
             try:
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model="claude-3-5-sonnet-20241022",
                     max_tokens=2000,
                     system=system_prompt,
                     messages=api_messages,
                 )
-                raw_reply = response.content[0].text
-                bot_reply = clean_thinking_tags(raw_reply)
+                bot_reply = clean_thinking_tags(get_response_text(response))
                 st.markdown(bot_reply)
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
