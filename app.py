@@ -3,9 +3,7 @@ import re
 import anthropic
 import streamlit as st
 
-# 업로드가 끝나면 사이드바를 접어 채팅 화면에 집중하게 한다.
-if "sidebar_state" not in st.session_state:
-    st.session_state.sidebar_state = "expanded"
+# 모드 선택·업로드·채팅이 모두 메인 화면에 있으므로 사이드바는 접어 둔다.
 # 홈 버튼으로 파일 업로더를 초기화하기 위한 키 세대 값
 if "uploader_gen" not in st.session_state:
     st.session_state.uploader_gen = 0
@@ -13,16 +11,19 @@ if "uploader_gen" not in st.session_state:
 st.set_page_config(
     page_title="알찬학원 신다혜 쌤의 1:1 수학 클리닉",
     page_icon="✏️",
-    layout="wide",
-    initial_sidebar_state=st.session_state.sidebar_state,
+    layout="centered",
+    initial_sidebar_state="collapsed",
 )
+
+MODE_STEP = "❓ 아예 모르겠어요 (스텝 튜터링)"
+MODE_REVIEW = "✍️ 내 풀이 검토 (문제 + 연습장)"
 
 
 def go_home():
-    """처음 상태로 되돌린다: 대화·업로드·사이드바 상태 전체 초기화."""
+    """처음 상태로 되돌린다: 대화·업로드·모드 선택 전체 초기화."""
     st.session_state.messages = []
     st.session_state.last_upload_key = None
-    st.session_state.sidebar_state = "expanded"
+    st.session_state.mode = None
     st.session_state.uploader_gen += 1
     st.rerun()
 
@@ -72,6 +73,30 @@ def inject_custom_css():
     }
     @media (max-width: 640px) {
         h1 { font-size: 1.6rem !important; }
+    }
+
+    /* 모드 선택 카드: 메인 화면 버튼을 크고 누르기 쉽게 (모바일 최적화) */
+    .st-key-pick_step .stButton > button,
+    .st-key-pick_review .stButton > button,
+    .st-key-pick_step button,
+    .st-key-pick_review button {
+        white-space: pre-line !important;
+        min-height: 140px !important;
+        height: 100% !important;
+        border: 2px solid #E2E8F0 !important;
+        border-radius: 16px !important;
+        padding: 1rem !important;
+        font-size: 1rem !important;
+        line-height: 1.5 !important;
+        box-shadow: 0 4px 12px rgba(58, 68, 154, 0.06) !important;
+    }
+    .st-key-pick_step .stButton > button:hover,
+    .st-key-pick_review .stButton > button:hover,
+    .st-key-pick_step button:hover,
+    .st-key-pick_review button:hover {
+        border-color: #00A19D !important;
+        background-color: #F0FDFA !important;
+        color: #0F172A !important;
     }
 
     section[data-testid="stSidebar"] {
@@ -216,8 +241,6 @@ if not st.session_state.authenticated:
     if st.button("클리닉 입장하기"):
         if input_code == STUDENT_CODE:
             st.session_state.authenticated = True
-            # 로그인 직후에는 업로드 안내가 보이도록 사이드바를 펼친 상태로 시작
-            st.session_state.sidebar_state = "expanded"
             st.success("인증되었습니다! 다혜 쌤과의 공부를 시작해 보세요.")
             st.rerun()
         else:
@@ -231,50 +254,69 @@ if "last_upload_key" not in st.session_state:
 
 system_prompt = load_system_prompt()
 
-# 사이드바에서 2개의 모드(탭) 선택
-with st.sidebar:
-    st.header("📸 문제 & 풀이 업로드")
-    mode = st.radio(
-        "어떤 진단을 받고 싶나요?",
-        ["❓ 아예 모르겠어요 (스텝 튜터링)", "✍️ 내 풀이 검토 (문제 + 연습장)"],
+if "mode" not in st.session_state:
+    st.session_state.mode = None
+
+_gen = st.session_state.uploader_gen
+uploaded_problem = None
+uploaded_solution = None
+
+# --- 모드 선택 카드 (메인 화면: 모바일에서도 사이드바 없이 바로 선택) ---
+if st.session_state.mode is None:
+    st.markdown("---")
+    st.markdown("#### 어떤 도움이 필요한가요?")
+    pick_a, pick_b = st.columns(2)
+    with pick_a:
+        if st.button(
+            "❓ 아예 모르겠어요\n\n문제 사진 1장을 올리면\n스텝별 유도 질문으로 도와줘요",
+            use_container_width=True,
+            key="pick_step",
+        ):
+            st.session_state.mode = MODE_STEP
+            st.rerun()
+    with pick_b:
+        if st.button(
+            "✍️ 내 풀이 검토\n\n문제 + 연습장 풀이 2장을 올리면\n오답 지점을 콕 짚어줘요",
+            use_container_width=True,
+            key="pick_review",
+        ):
+            st.session_state.mode = MODE_REVIEW
+            st.rerun()
+    st.stop()
+
+mode = st.session_state.mode
+
+# --- 선택된 모드: 업로드 영역 (메인 화면) ---
+st.markdown("---")
+head_l, head_r = st.columns([3, 1])
+with head_l:
+    st.markdown(f"**현재 모드**  \n{mode}")
+with head_r:
+    if st.button("↩ 모드 변경", use_container_width=True, key="change_mode"):
+        go_home()
+
+if mode == MODE_STEP:
+    st.caption("📌 **문제 사진 1장**을 올려주세요.")
+    uploaded_problem = st.file_uploader(
+        "문제 사진 업로드", type=["jpg", "jpeg", "png"], key=f"prob_only_{_gen}"
     )
-
-    uploaded_problem = None
-    uploaded_solution = None
-    _gen = st.session_state.uploader_gen
-
-    if mode == "❓ 아예 모르겠어요 (스텝 튜터링)":
-        st.markdown("---")
-        st.caption("📌 **문제 사진 1장**을 올려주세요.")
+    if uploaded_problem:
+        st.image(uploaded_problem, caption="📷 문제 사진", use_container_width=True)
+else:
+    st.caption("📌 **문제 사진 1장**과 **연습장 풀이 사진 1장**을 각각 올려주세요.")
+    up_p, up_s = st.columns(2)
+    with up_p:
         uploaded_problem = st.file_uploader(
-            "문제 사진 업로드", type=["jpg", "jpeg", "png"], key=f"prob_only_{_gen}"
+            "1️⃣ 문제 사진", type=["jpg", "jpeg", "png"], key=f"prob_dual_{_gen}"
         )
         if uploaded_problem:
             st.image(uploaded_problem, caption="📷 문제 사진", use_container_width=True)
-
-    else:
-        st.markdown("---")
-        st.caption("📌 **문제 사진 1장**과 **연습장 풀이 사진 1장**을 각각 올려주세요.")
-        uploaded_problem = st.file_uploader(
-            "1️⃣ 문제 사진 업로드", type=["jpg", "jpeg", "png"], key=f"prob_dual_{_gen}"
-        )
-        if uploaded_problem:
-            st.image(uploaded_problem, caption="📷 문제 사진", use_container_width=True)
-
+    with up_s:
         uploaded_solution = st.file_uploader(
-            "2️⃣ 연습장 풀이 사진 업로드", type=["jpg", "jpeg", "png"], key=f"sol_dual_{_gen}"
+            "2️⃣ 연습장 풀이 사진", type=["jpg", "jpeg", "png"], key=f"sol_dual_{_gen}"
         )
         if uploaded_solution:
             st.image(uploaded_solution, caption="✍️ 연습장 풀이 사진", use_container_width=True)
-
-    st.markdown("---")
-    if st.button("🔄 대화 초기화", use_container_width=True):
-        st.session_state.messages = []
-        st.session_state.last_upload_key = None
-        st.rerun()
-
-    if st.button("🏠 처음으로 (전체 초기화)", use_container_width=True, key="home_side"):
-        go_home()
 
 # 업로드 상태 변경 식별키 생성
 prob_id = uploaded_problem.file_id if uploaded_problem else "none"
@@ -283,7 +325,7 @@ curr_upload_key = f"{mode}_{prob_id}_{sol_id}"
 
 # 새로운 업로드가 발생했을 때 대화 자동 시작
 if api_key and (curr_upload_key != st.session_state.last_upload_key):
-    if mode == "❓ 아예 모르겠어요 (스텝 튜터링)" and uploaded_problem:
+    if mode == MODE_STEP and uploaded_problem:
         st.session_state.last_upload_key = curr_upload_key
         st.session_state.messages = []
 
@@ -318,13 +360,11 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
-                # 업로드·분석이 끝났으니 사이드바를 접어 채팅에 집중
-                st.session_state.sidebar_state = "collapsed"
                 st.rerun()
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
 
-    elif mode == "✍️ 내 풀이 검토 (문제 + 연습장)" and uploaded_problem and uploaded_solution:
+    elif mode == MODE_REVIEW and uploaded_problem and uploaded_solution:
         st.session_state.last_upload_key = curr_upload_key
         st.session_state.messages = []
 
@@ -371,8 +411,6 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
-                # 업로드·분석이 끝났으니 사이드바를 접어 채팅에 집중
-                st.session_state.sidebar_state = "collapsed"
                 st.rerun()
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
@@ -397,7 +435,7 @@ if prompt := st.chat_input("다혜 쌤에게 답장하기 (예: 1단계 정답�
 
     for idx, msg in enumerate(st.session_state.messages):
         if idx == 0:
-            if mode == "❓ 아예 모르겠어요 (스텝 튜터링)" and uploaded_problem:
+            if mode == MODE_STEP and uploaded_problem:
                 uploaded_problem.seek(0)
                 content_blocks = [
                     {
@@ -411,7 +449,7 @@ if prompt := st.chat_input("다혜 쌤에게 답장하기 (예: 1단계 정답�
                     {"type": "text", "text": msg["content"]},
                 ]
                 api_messages.append({"role": "user", "content": content_blocks})
-            elif mode == "✍️ 내 풀이 검토 (문제 + 연습장)" and uploaded_problem and uploaded_solution:
+            elif mode == MODE_REVIEW and uploaded_problem and uploaded_solution:
                 uploaded_problem.seek(0)
                 uploaded_solution.seek(0)
                 content_blocks = [
