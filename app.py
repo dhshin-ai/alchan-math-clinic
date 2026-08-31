@@ -81,14 +81,48 @@ def inject_custom_css():
         box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05) !important;
     }
 
+    /* 이용 안내 박스 (복원) */
+    .guide-box {
+        background-color: #FFFFFF;
+        border: 2px solid #3A449A;
+        border-radius: 12px;
+        padding: 1rem 1.2rem;
+        margin: 0.5rem 0 1.5rem;
+        box-shadow: 0 4px 10px rgba(58, 68, 154, 0.05);
+    }
+    .guide-title {
+        color: #3A449A;
+        font-weight: 800;
+        font-size: 1.05rem;
+        margin-bottom: 0.5rem;
+    }
+    .guide-item {
+        color: #1E293B;
+        font-size: 0.95rem;
+        margin-bottom: 0.3rem;
+        line-height: 1.5;
+    }
+
+    /* 모드 선택 카드: 두 장의 형태·높이를 통일 */
     .mode-card {
         background-color: #FFFFFF;
         border: 2px solid #E2E8F0;
         border-radius: 14px;
         padding: 1.5rem;
         text-align: center;
-        margin-bottom: 1rem;
+        margin-bottom: 0.75rem;
         box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+        min-height: 200px;
+    }
+    .mode-card h3 {
+        margin: 0 0 0.6rem !important;
+        font-size: 1.15rem !important;
+    }
+    .mode-card p {
+        color: #64748B !important;
+        font-size: 0.95rem !important;
+        line-height: 1.55 !important;
+        margin: 0 !important;
     }
 
     .katex-display {
@@ -139,6 +173,18 @@ if "authenticated" not in st.session_state:
 
 st.title("✏️ 알찬학원 신다혜 쌤의 1:1 수학 클리닉")
 
+# 이용 안내 박스
+st.markdown(
+    '''
+<div class="guide-box">
+    <div class="guide-title">💡 클리닉 이용 안내 (필요한 모드를 선택해 주세요!)</div>
+    <div class="guide-item">❓ <b>풀이가 막혔어요:</b> 문제 사진 1장만 올리면 다혜 쌤이 스텝별 유도 질문으로 도와줘요.</div>
+    <div class="guide-item">✍️ <b>내 풀이 검토:</b> 문제 사진 + 연습장 풀이 사진 2장을 올리면 오답 지점을 콕 짚어줘요.</div>
+</div>
+''',
+    unsafe_allow_html=True,
+)
+
 if not st.session_state.authenticated:
     st.markdown("---")
     st.subheader("🔒 알찬학원 수강생 전용 로그인")
@@ -179,10 +225,8 @@ if st.session_state.selected_mode is None:
             '''
         <div class="mode-card">
             <h3>❓ 풀이가 막혔어요</h3>
-            <p style="color: #64748B; font-size: 0.95rem; margin-top: 0.5rem;">
-                <b>문제 사진 1장</b>만 올려주세요!<br/>
-                정답을 바로 주는 대신, <b>스스로 고민해서 답을 찾아갈 수 있게</b> 다혜 쌤이 차근차근 질문을 던져줄게요.
-            </p>
+            <p><b>문제 사진 1장</b>만 올려주세요!<br/>
+            정답을 바로 주는 대신, 스스로 답을 찾아갈 수 있게 다혜 쌤이 차근차근 질문을 던져줄게요.</p>
         </div>
         ''',
             unsafe_allow_html=True,
@@ -196,10 +240,8 @@ if st.session_state.selected_mode is None:
             '''
         <div class="mode-card">
             <h3>✍️ 내 풀이 검토</h3>
-            <p style="color: #64748B; font-size: 0.95rem; margin-top: 0.5rem;">
-                <b>문제 + 연습장 풀이 2장</b>을 올려주세요!<br/>
-                잘 접근한 부분과 어디서 계산/개념이 삐끗했는지 오답을 콕 짚어 줄게요.
-            </p>
+            <p><b>문제 + 연습장 풀이 2장</b>을 올려주세요!<br/>
+            잘 접근한 부분과 어디서 계산/개념이 삐끗했는지 오답을 콕 짚어 줄게요.</p>
         </div>
         ''',
             unsafe_allow_html=True,
@@ -219,7 +261,7 @@ top_col1, top_col2 = st.columns([3, 1])
 with top_col1:
     st.markdown(f"#### 📌 선택한 모드: **{mode}**")
 with top_col2:
-    if st.button("🔄 다른 문제 선택하기", use_container_width=True):
+    if st.button("🏠 처음으로", use_container_width=True, key="btn_home"):
         st.session_state.selected_mode = None
         st.session_state.messages = []
         st.session_state.last_upload_key = None
