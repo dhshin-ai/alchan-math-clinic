@@ -271,7 +271,7 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
         with st.spinner("다혜 쌤이 문제를 꼼꼼하게 살피는 중입니다..."):
             try:
                 response = client.messages.create(
-                    model="claude-3-5-sonnet-20241022",
+                    model="claude-sonnet-4-5",
                     max_tokens=2000,
                     system=system_prompt,
                     messages=[{"role": "user", "content": content_blocks}],
@@ -322,7 +322,7 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
         with st.spinner("다혜 쌤이 문제와 연습장 풀이를 대조 분석하는 중입니다..."):
             try:
                 response = client.messages.create(
-                    model="claude-3-5-sonnet-20241022",
+                    model="claude-sonnet-4-5",
                     max_tokens=2000,
                     system=system_prompt,
                     messages=[{"role": "user", "content": content_blocks}],
@@ -401,7 +401,7 @@ if prompt := st.chat_input("다혜 쌤에게 답장하기 (예: 1단계 정답�
         with st.spinner("생각 중..."):
             try:
                 response = client.messages.create(
-                    model="claude-3-5-sonnet-20241022",
+                    model="claude-sonnet-4-5",
                     max_tokens=2000,
                     system=system_prompt,
                     messages=api_messages,
