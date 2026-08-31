@@ -1,4 +1,6 @@
+import ast
 import base64
+import math
 import re
 import anthropic
 import streamlit as st
@@ -151,6 +153,90 @@ def get_response_text(response):
     return cleaned.strip()
 
 
+# -------------------------------------------------------------------
+# 🔒 도형 코드 안전 실행 (AST 화이트리스트)
+#    - 모델이 생성한 ```python 블록을 그대로 exec 하지 않고, 먼저 구문 트리를
+#      검사해서 그리기(matplotlib/numpy/patches)에 필요한 노드만 통과시킨다.
+#    - import, 던더(__) 이름·속성, 임의 함수 호출, 거대한 상수/지수 등은 차단.
+# -------------------------------------------------------------------
+class UnsafeDiagramCode(Exception):
+    pass
+
+
+_SAFE_BUILTINS = {
+    "range": range, "len": len, "enumerate": enumerate, "zip": zip,
+    "min": min, "max": max, "abs": abs, "sum": sum, "round": round,
+    "list": list, "tuple": tuple, "dict": dict, "set": set,
+    "float": float, "int": int, "str": str, "bool": bool,
+    "sorted": sorted, "reversed": reversed, "map": map, "filter": filter,
+}
+
+_DENY_ATTRS = {
+    "savefig", "secrets", "environ", "system", "popen", "getenv", "putenv",
+    "read", "write", "open", "remove", "unlink", "rename", "communicate",
+    "call", "check_output", "check_call", "run", "Popen", "eval", "exec",
+    "load", "loads", "connect", "urlopen", "request",
+}
+
+_ALLOWED_NODES = (
+    ast.Module, ast.Expr, ast.Assign, ast.AugAssign, ast.AnnAssign,
+    ast.For, ast.If, ast.IfExp, ast.Pass, ast.Break, ast.Continue,
+    ast.Call, ast.keyword, ast.Attribute, ast.Name, ast.Load, ast.Store, ast.Del,
+    ast.Constant, ast.FormattedValue, ast.JoinedStr,
+    ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare,
+    ast.List, ast.Tuple, ast.Dict, ast.Set, ast.Subscript, ast.Slice, ast.Starred,
+    ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp, ast.comprehension,
+    ast.And, ast.Or, ast.Not, ast.USub, ast.UAdd, ast.Invert,
+    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
+    ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+    ast.Is, ast.IsNot, ast.In, ast.NotIn,
+)
+_ALLOWED_NODES += tuple(
+    getattr(ast, _n) for _n in ("Index", "ExtSlice", "Num", "Str", "NameConstant", "Bytes")
+    if hasattr(ast, _n)
+)
+
+
+def _validate_diagram_ast(tree):
+    nodes = list(ast.walk(tree))
+    if len(nodes) > 2500:
+        raise UnsafeDiagramCode("코드가 너무 깁니다")
+    for node in nodes:
+        if not isinstance(node, _ALLOWED_NODES):
+            raise UnsafeDiagramCode(f"허용되지 않은 구문: {type(node).__name__}")
+        if isinstance(node, ast.Attribute):
+            if node.attr.startswith("_") or node.attr in _DENY_ATTRS:
+                raise UnsafeDiagramCode(f"허용되지 않은 속성: {node.attr}")
+        if isinstance(node, ast.Name) and node.id.startswith("__"):
+            raise UnsafeDiagramCode("던더 이름 접근 금지")
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, (int, float)) and abs(node.value) > 5_000_000:
+                raise UnsafeDiagramCode("숫자 상수가 너무 큽니다")
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
+            rhs = node.right
+            if isinstance(rhs, ast.Constant) and isinstance(rhs.value, (int, float)) and rhs.value > 8:
+                raise UnsafeDiagramCode("지수가 너무 큽니다")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id not in _SAFE_BUILTINS:
+                raise UnsafeDiagramCode(f"허용되지 않은 함수 호출: {node.func.id}")
+
+
+def run_diagram_code(code):
+    """AST 검증을 통과한 코드만 제한된 스코프에서 실행하고 Figure를 반환."""
+    tree = ast.parse(code, mode="exec")
+    _validate_diagram_ast(tree)
+    scope = {
+        "__builtins__": _SAFE_BUILTINS,
+        "plt": plt, "np": np, "patches": patches, "math": math,
+    }
+    plt.close("all")
+    exec(compile(tree, "<diagram>", "exec"), scope)  # noqa: S102 - AST 화이트리스트 검증 후 실행
+    fig = scope.get("fig")
+    if fig is None:
+        fig = plt.gcf()
+    return fig
+
+
 def render_assistant_content(content):
     pattern = r"```python\s*(.*?)\s*```"
     parts = re.split(pattern, content, flags=re.DOTALL)
@@ -159,19 +245,25 @@ def render_assistant_content(content):
         if i % 2 == 0:
             if part.strip():
                 st.markdown(part)
-        else:
-            code = part.strip()
-            if "plt." in code or "fig" in code:
-                try:
-                    plt.close("all")
-                    local_scope = {"plt": plt, "np": np, "patches": patches, "st": st}
-                    exec(code, local_scope)
-                    fig = local_scope.get("fig", plt.gcf())
-                    if fig and len(fig.axes) > 0:
-                        st.pyplot(fig)
-                        plt.close("all")
-                except Exception as e:
-                    st.code(code, language="python")
+            continue
+
+        code = part.strip()
+        if not any(tok in code for tok in ("plt.", "fig", "patches.", "ax.")):
+            st.code(code, language="python")
+            continue
+
+        try:
+            fig = run_diagram_code(code)
+            if fig is not None and len(fig.axes) > 0:
+                st.pyplot(fig)
+            plt.close("all")
+        except UnsafeDiagramCode as e:
+            plt.close("all")
+            st.warning(f"⚠️ 안전하지 않은 그림 코드라서 실행하지 않았어요: {e}")
+            st.code(code, language="python")
+        except Exception:
+            plt.close("all")
+            st.code(code, language="python")
 
 
 def load_system_prompt():
