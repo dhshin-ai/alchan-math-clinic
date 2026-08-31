@@ -3,12 +3,28 @@ import re
 import anthropic
 import streamlit as st
 
+# 업로드가 끝나면 사이드바를 접어 채팅 화면에 집중하게 한다.
+if "sidebar_state" not in st.session_state:
+    st.session_state.sidebar_state = "expanded"
+# 홈 버튼으로 파일 업로더를 초기화하기 위한 키 세대 값
+if "uploader_gen" not in st.session_state:
+    st.session_state.uploader_gen = 0
+
 st.set_page_config(
     page_title="알찬학원 신다혜 쌤의 1:1 수학 클리닉",
     page_icon="✏️",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state=st.session_state.sidebar_state,
 )
+
+
+def go_home():
+    """처음 상태로 되돌린다: 대화·업로드·사이드바 상태 전체 초기화."""
+    st.session_state.messages = []
+    st.session_state.last_upload_key = None
+    st.session_state.sidebar_state = "expanded"
+    st.session_state.uploader_gen += 1
+    st.rerun()
 
 # API 키 자동 로드
 try:
@@ -160,7 +176,13 @@ def load_system_prompt():
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
-st.title("✏️ 알찬학원 신다혜 쌤의 1:1 수학 클리닉")
+_title_col, _home_col = st.columns([5, 1])
+with _title_col:
+    st.title("✏️ 알찬학원 신다혜 쌤의 1:1 수학 클리닉")
+with _home_col:
+    st.write("")
+    if st.button("🏠 처음으로", use_container_width=True, key="home_top"):
+        go_home()
 
 # 안내 메세지
 st.markdown(
@@ -207,12 +229,13 @@ with st.sidebar:
 
     uploaded_problem = None
     uploaded_solution = None
+    _gen = st.session_state.uploader_gen
 
     if mode == "❓ 아예 모르겠어요 (스텝 튜터링)":
         st.markdown("---")
         st.caption("📌 **문제 사진 1장**을 올려주세요.")
         uploaded_problem = st.file_uploader(
-            "문제 사진 업로드", type=["jpg", "jpeg", "png"], key="prob_only"
+            "문제 사진 업로드", type=["jpg", "jpeg", "png"], key=f"prob_only_{_gen}"
         )
         if uploaded_problem:
             st.image(uploaded_problem, caption="📷 문제 사진", use_container_width=True)
@@ -221,13 +244,13 @@ with st.sidebar:
         st.markdown("---")
         st.caption("📌 **문제 사진 1장**과 **연습장 풀이 사진 1장**을 각각 올려주세요.")
         uploaded_problem = st.file_uploader(
-            "1️⃣ 문제 사진 업로드", type=["jpg", "jpeg", "png"], key="prob_dual"
+            "1️⃣ 문제 사진 업로드", type=["jpg", "jpeg", "png"], key=f"prob_dual_{_gen}"
         )
         if uploaded_problem:
             st.image(uploaded_problem, caption="📷 문제 사진", use_container_width=True)
 
         uploaded_solution = st.file_uploader(
-            "2️⃣ 연습장 풀이 사진 업로드", type=["jpg", "jpeg", "png"], key="sol_dual"
+            "2️⃣ 연습장 풀이 사진 업로드", type=["jpg", "jpeg", "png"], key=f"sol_dual_{_gen}"
         )
         if uploaded_solution:
             st.image(uploaded_solution, caption="✍️ 연습장 풀이 사진", use_container_width=True)
@@ -237,6 +260,9 @@ with st.sidebar:
         st.session_state.messages = []
         st.session_state.last_upload_key = None
         st.rerun()
+
+    if st.button("🏠 처음으로 (전체 초기화)", use_container_width=True, key="home_side"):
+        go_home()
 
 # 업로드 상태 변경 식별키 생성
 prob_id = uploaded_problem.file_id if uploaded_problem else "none"
@@ -280,6 +306,8 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
+                # 업로드·분석이 끝났으니 사이드바를 접어 채팅에 집중
+                st.session_state.sidebar_state = "collapsed"
                 st.rerun()
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
@@ -331,6 +359,8 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
+                # 업로드·분석이 끝났으니 사이드바를 접어 채팅에 집중
+                st.session_state.sidebar_state = "collapsed"
                 st.rerun()
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
