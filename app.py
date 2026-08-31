@@ -30,7 +30,14 @@ def inject_custom_css():
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
 
     html, body, [class*="st-"] {
-        font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+        font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, sans-serif,
+            'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji';
+    }
+
+    /* Streamlit 기본 아이콘(화살표·업로드 등)이 Pretendard로 덮여 깨지지 않도록 원복 */
+    [data-testid="stIconMaterial"], .material-symbols-rounded, .material-icons,
+    span[data-testid="stIconMaterial"] {
+        font-family: 'Material Symbols Rounded', 'Material Icons' !important;
     }
 
     .stApp {
@@ -103,11 +110,10 @@ def inject_custom_css():
         line-height: 1.5;
     }
 
-    /* 모드 선택: 카드 전체가 하나의 큰 클릭 버튼 (두 장 형태·높이 통일) */
-    .st-key-btn_mode1 .stButton > button,
-    .st-key-btn_mode2 .stButton > button,
-    .st-key-btn_mode1 button,
-    .st-key-btn_mode2 button {
+    /* 모드 선택: 카드 전체가 하나의 큰 클릭 버튼 (두 장 형태·높이 통일)
+       선택자를 해당 위젯 컨테이너로 한정해 다른 요소(업로드 안내 문구 등)에 새지 않게 한다. */
+    div.st-key-btn_mode1 .stButton > button,
+    div.st-key-btn_mode2 .stButton > button {
         white-space: pre-line !important;
         min-height: 210px !important;
         height: 100% !important;
@@ -119,13 +125,17 @@ def inject_custom_css():
         text-align: center !important;
         box-shadow: 0 2px 8px rgba(0,0,0,0.04) !important;
     }
-    .st-key-btn_mode1 .stButton > button:hover,
-    .st-key-btn_mode2 .stButton > button:hover,
-    .st-key-btn_mode1 button:hover,
-    .st-key-btn_mode2 button:hover {
+    div.st-key-btn_mode1 .stButton > button:hover,
+    div.st-key-btn_mode2 .stButton > button:hover {
         border-color: #00A19D !important;
         background-color: #F0FDFA !important;
         color: #0F172A !important;
+    }
+
+    /* 업로드 영역 문구는 항상 정상 줄바꿈 (카드 버튼 규칙과 격리) */
+    [data-testid="stFileUploader"] *,
+    [data-testid="stFileUploaderDropzoneInstructions"] * {
+        white-space: normal !important;
     }
 
     .katex-display {
