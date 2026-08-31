@@ -64,6 +64,16 @@ def inject_custom_css():
         font-weight: 800 !important;
     }
 
+    /* 한글 제목이 단어 중간에서 잘리지 않도록 (띄어쓰기 단위로만 줄바꿈) */
+    h1 {
+        word-break: keep-all !important;
+        overflow-wrap: break-word !important;
+        line-height: 1.25 !important;
+    }
+    @media (max-width: 640px) {
+        h1 { font-size: 1.6rem !important; }
+    }
+
     section[data-testid="stSidebar"] {
         background-color: #FFFFFF !important;
         border-right: 1px solid #E2E8F0;
