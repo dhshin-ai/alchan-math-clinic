@@ -103,26 +103,29 @@ def inject_custom_css():
         line-height: 1.5;
     }
 
-    /* 모드 선택 카드: 두 장의 형태·높이를 통일 */
-    .mode-card {
-        background-color: #FFFFFF;
-        border: 2px solid #E2E8F0;
-        border-radius: 14px;
-        padding: 1.5rem;
-        text-align: center;
-        margin-bottom: 0.75rem;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
-        min-height: 200px;
+    /* 모드 선택: 카드 전체가 하나의 큰 클릭 버튼 (두 장 형태·높이 통일) */
+    .st-key-btn_mode1 .stButton > button,
+    .st-key-btn_mode2 .stButton > button,
+    .st-key-btn_mode1 button,
+    .st-key-btn_mode2 button {
+        white-space: pre-line !important;
+        min-height: 210px !important;
+        height: 100% !important;
+        border: 2px solid #E2E8F0 !important;
+        border-radius: 14px !important;
+        padding: 1.5rem 1.25rem !important;
+        font-size: 1rem !important;
+        line-height: 1.6 !important;
+        text-align: center !important;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.04) !important;
     }
-    .mode-card h3 {
-        margin: 0 0 0.6rem !important;
-        font-size: 1.15rem !important;
-    }
-    .mode-card p {
-        color: #64748B !important;
-        font-size: 0.95rem !important;
-        line-height: 1.55 !important;
-        margin: 0 !important;
+    .st-key-btn_mode1 .stButton > button:hover,
+    .st-key-btn_mode2 .stButton > button:hover,
+    .st-key-btn_mode1 button:hover,
+    .st-key-btn_mode2 button:hover {
+        border-color: #00A19D !important;
+        background-color: #F0FDFA !important;
+        color: #0F172A !important;
     }
 
     .katex-display {
@@ -221,32 +224,26 @@ if st.session_state.selected_mode is None:
     col1, col2 = st.columns(2)
 
     with col1:
-        st.markdown(
-            '''
-        <div class="mode-card">
-            <h3>❓ 풀이가 막혔어요</h3>
-            <p><b>문제 사진 1장</b>만 올려주세요!<br/>
-            정답을 바로 주는 대신, 스스로 답을 찾아갈 수 있게 다혜 쌤이 차근차근 질문을 던져줄게요.</p>
-        </div>
-        ''',
-            unsafe_allow_html=True,
-        )
-        if st.button("❓ 스스로 풀어보기 시작", use_container_width=True, key="btn_mode1"):
+        if st.button(
+            "❓ 풀이가 막혔어요\n\n"
+            "문제 사진 1장만 올려주세요!\n"
+            "정답을 바로 주는 대신, 스스로 답을 찾아갈 수 있게\n"
+            "다혜 쌤이 차근차근 질문을 던져줄게요.",
+            use_container_width=True,
+            key="btn_mode1",
+        ):
             st.session_state.selected_mode = "❓ 스스로 풀어보기 (차근차근 질문)"
             st.rerun()
 
     with col2:
-        st.markdown(
-            '''
-        <div class="mode-card">
-            <h3>✍️ 내 풀이 검토</h3>
-            <p><b>문제 + 연습장 풀이 2장</b>을 올려주세요!<br/>
-            잘 접근한 부분과 어디서 계산/개념이 삐끗했는지 오답을 콕 짚어 줄게요.</p>
-        </div>
-        ''',
-            unsafe_allow_html=True,
-        )
-        if st.button("✍️ 오답 검토 클리닉 시작", use_container_width=True, key="btn_mode2"):
+        if st.button(
+            "✍️ 내 풀이 검토\n\n"
+            "문제 + 연습장 풀이 2장을 올려주세요!\n"
+            "잘 접근한 부분과 계산·개념이 삐끗한\n"
+            "오답 지점을 콕 짚어 줄게요.",
+            use_container_width=True,
+            key="btn_mode2",
+        ):
             st.session_state.selected_mode = "✍️ 내 풀이 검토 (문제 + 연습장)"
             st.rerun()
 
