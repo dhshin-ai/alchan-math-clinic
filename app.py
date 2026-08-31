@@ -216,6 +216,8 @@ if not st.session_state.authenticated:
     if st.button("클리닉 입장하기"):
         if input_code == STUDENT_CODE:
             st.session_state.authenticated = True
+            # 로그인 직후에는 업로드 안내가 보이도록 사이드바를 펼친 상태로 시작
+            st.session_state.sidebar_state = "expanded"
             st.success("인증되었습니다! 다혜 쌤과의 공부를 시작해 보세요.")
             st.rerun()
         else:
