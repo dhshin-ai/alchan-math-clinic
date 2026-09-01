@@ -21,17 +21,10 @@ try:
 except Exception:
     api_key = None
 
-# 기본 학생 계정 DB (Secrets 미설정 시 기본 사용)
-DEFAULT_STUDENTS = {
-    "alchan1": {"pw": "1234", "name": "김철수"},
-    "alchan2": {"pw": "1234", "name": "이영희"},
-    "alchan": {"pw": "1234", "name": "알찬수강생"},
-}
-
 try:
-    STUDENTS_DB = st.secrets["STUDENTS"]
+    MASTER_PW = st.secrets["STUDENT_CODE"]
 except Exception:
-    STUDENTS_DB = DEFAULT_STUDENTS
+    MASTER_PW = "1234"
 
 
 def log_to_slack_and_gsheet(student_name, mode, student_text, ai_reply):
@@ -295,21 +288,23 @@ st.title("✏️ 알찬학원 신다혜 쌤의 1:1 수학 클리닉")
 
 if not st.session_state.authenticated:
     st.markdown("---")
-    st.subheader("🔒 수강생 로그인")
-    st.caption("선생님께 안내받은 아이디와 비밀번호를 입력해 주세요.")
+    st.subheader("🔒 수강생 입장하기")
+    st.caption("학생 본인의 이름과 선생님이 알려준 비밀번호(1234)를 입력해 주세요.")
 
-    input_id = st.text_input("학생 아이디:")
+    input_name = st.text_input("학생 이름 (예: 김철수):")
     input_pw = st.text_input("비밀번호:", type="password")
 
     if st.button("🔓 클리닉 입장하기", use_container_width=True):
-        clean_id = input_id.strip()
-        if clean_id in STUDENTS_DB and STUDENTS_DB[clean_id]["pw"] == input_pw:
+        clean_name = input_name.strip()
+        if not clean_name:
+            st.error("이름을 입력해 주세요!")
+        elif input_pw == MASTER_PW or input_pw == "1234":
             st.session_state.authenticated = True
-            st.session_state.student_name = STUDENTS_DB[clean_id]["name"]
-            st.success(f"{st.session_state.student_name} 학생, 환영합니다! 공부를 시작해 볼까요?")
+            st.session_state.student_name = clean_name
+            st.success(f"{clean_name} 학생, 환영합니다! 공부를 시작해 볼까요?")
             st.rerun()
         else:
-            st.error("아이디 또는 비밀번호가 올바르지 않습니다. 다혜 쌤에게 문의해 주세요!")
+            st.error("비밀번호가 올바르지 않습니다. (비밀번호: 1234)")
     st.stop()
 
 if "messages" not in st.session_state:
@@ -321,8 +316,7 @@ if "last_upload_key" not in st.session_state:
 
 system_prompt = load_system_prompt()
 
-# 상단 로그인 정보 안내
-st.caption(f"👤 로그인 학생: **{st.session_state.student_name}**")
+st.caption(f"👤 현재 접속 학생: **{st.session_state.student_name}**")
 
 if st.session_state.selected_mode is None:
     st.markdown(
