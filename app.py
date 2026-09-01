@@ -21,25 +21,31 @@ try:
 except Exception:
     api_key = None
 
+# 기본 학생 계정 DB (Secrets 미설정 시 기본 사용)
+DEFAULT_STUDENTS = {
+    "alchan1": {"pw": "1234", "name": "김철수"},
+    "alchan2": {"pw": "1234", "name": "이영희"},
+    "alchan": {"pw": "1234", "name": "알찬수강생"},
+}
+
 try:
-    STUDENT_CODE = st.secrets["STUDENT_CODE"]
+    STUDENTS_DB = st.secrets["STUDENTS"]
 except Exception:
-    STUDENT_CODE = "alchan1234"
+    STUDENTS_DB = DEFAULT_STUDENTS
 
 
-def log_to_slack_and_gsheet(mode, student_text, ai_reply):
-    """슬랙 푸시 알림 및 구글 시트 자동 저장 함수 (비동기 예외 안전 처리)"""
+def log_to_slack_and_gsheet(student_name, mode, student_text, ai_reply):
     slack_url = st.secrets.get("SLACK_WEBHOOK_URL", "")
     gsheet_url = st.secrets.get("GSHEET_WEBHOOK_URL", "")
 
     kst = timezone(timedelta(hours=9))
     now_str = datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S")
 
-    # 1. 슬랙 실시간 푸시 알림
     if slack_url:
         try:
             slack_payload = {
                 "text": f"🔔 *[알찬학원 수학 클리닉] 새로운 질문 접수*\n"
+                        f"• *학생 이름*: {student_name}\n"
                         f"• *시각*: {now_str}\n"
                         f"• *모드*: {mode}\n"
                         f"• *학생 입력*: {student_text if student_text else '(사진 업로드)'}\n\n"
@@ -49,11 +55,11 @@ def log_to_slack_and_gsheet(mode, student_text, ai_reply):
         except Exception:
             pass
 
-    # 2. 구글 시트 오답 데이터 저장
     if gsheet_url:
         try:
             gsheet_payload = {
                 "timestamp": now_str,
+                "student_name": student_name,
                 "mode": mode,
                 "prompt": student_text if student_text else "(사진 최초 제출)",
                 "response": ai_reply
@@ -69,12 +75,10 @@ def inject_custom_css():
     <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
 
-    /* 1. 기본 폰트 설정 */
     html, body, .stApp {
         font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     }
 
-    /* 2. Streamlit 아이콘 폰트 보호 (아이콘이 'upload' 글자로 렌더링되는 현상 차단) */
     [data-testid="stIcon"], i, [class*="icon"], [class*="material"] {
         font-family: inherit !important;
     }
@@ -83,7 +87,6 @@ def inject_custom_css():
         background-color: #F8FAFC;
     }
     
-    /* 사이드바 완전히 숨기기 */
     [data-testid="stSidebar"] {
         display: none;
     }
@@ -99,7 +102,6 @@ def inject_custom_css():
         line-height: 1.35 !important;
     }
 
-    /* 상단 안내 상자 */
     .guide-box {
         background-color: #FFFFFF;
         border: 2px solid #3A449A;
@@ -140,7 +142,6 @@ def inject_custom_css():
         color: #000000 !important;
     }
 
-    /* 💡 메인 2개 모드 선택 대형 카드 버튼에만 충실하게 적용 (기타 버튼에 영향 금지) */
     div[data-testid="stKey-btn_mode1"] button,
     div[data-testid="stKey-btn_mode2"] button {
         width: 100% !important;
@@ -168,7 +169,6 @@ def inject_custom_css():
         transform: translateY(-2px) !important;
     }
 
-    /* 파일 업로더 상자 예쁘고 깔끔하게 원복 */
     [data-testid="stFileUploader"] {
         background-color: #FFFFFF;
         border-radius: 12px;
@@ -208,7 +208,7 @@ def is_safe_matplotlib_code(code_str):
     - 밑줄(_)로 시작하는 모든 속성 접근 금지 (__getattribute__/__class__ 등 우회 차단)
     - 던더 이름 금지, 파일/OS/네트워크 관련 속성 금지
     - 허용된 내장 함수 외의 이름 호출 금지 (getattr/eval/exec/open 등 차단)
-    - 500만 초과 숫자 상수 금지 (메모리 폭탄 방지)
+    - 500만 초과 숫자 상수·지수 8 초과 금지 (메모리 폭탄 방지)
     """
     try:
         tree = ast.parse(code_str)
@@ -288,23 +288,28 @@ def load_system_prompt():
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
+if "student_name" not in st.session_state:
+    st.session_state.student_name = ""
 
 st.title("✏️ 알찬학원 신다혜 쌤의 1:1 수학 클리닉")
 
 if not st.session_state.authenticated:
     st.markdown("---")
-    st.subheader("🔒 알찬학원 수강생 전용 로그인")
-    input_code = st.text_input(
-        "학원 전용 비밀번호를 입력해 주세요:", type="password"
-    )
+    st.subheader("🔒 수강생 로그인")
+    st.caption("선생님께 안내받은 아이디와 비밀번호를 입력해 주세요.")
+
+    input_id = st.text_input("학생 아이디:")
+    input_pw = st.text_input("비밀번호:", type="password")
 
     if st.button("🔓 클리닉 입장하기", use_container_width=True):
-        if input_code == STUDENT_CODE:
+        clean_id = input_id.strip()
+        if clean_id in STUDENTS_DB and STUDENTS_DB[clean_id]["pw"] == input_pw:
             st.session_state.authenticated = True
-            st.success("인증되었습니다! 다혜 쌤과의 공부를 시작해 보세요.")
+            st.session_state.student_name = STUDENTS_DB[clean_id]["name"]
+            st.success(f"{st.session_state.student_name} 학생, 환영합니다! 공부를 시작해 볼까요?")
             st.rerun()
         else:
-            st.error("비밀번호가 올바르지 않습니다. 신다혜 쌤에게 문의해 주세요!")
+            st.error("아이디 또는 비밀번호가 올바르지 않습니다. 다혜 쌤에게 문의해 주세요!")
     st.stop()
 
 if "messages" not in st.session_state:
@@ -316,13 +321,16 @@ if "last_upload_key" not in st.session_state:
 
 system_prompt = load_system_prompt()
 
+# 상단 로그인 정보 안내
+st.caption(f"👤 로그인 학생: **{st.session_state.student_name}**")
+
 if st.session_state.selected_mode is None:
     st.markdown(
         """
     <div class="guide-box">
         <div class="guide-title">💡 클리닉 이용 안내</div>
         <div class="guide-item">❓ <b>풀이가 막혔어요:</b> 문제 사진 1장을 올리면, 정답 대신 스스로 답을 찾아갈 수 있게 다혜 쌤이 질문을 던져줍니다.</div>
-        <div class="guide-item">✍️ <b>내 풀이 검토:</b> 문제 사진과 연습장 풀이 사진 2장을 올리면 잘한 부분과 실수한 부분을 콕 짚어줍니다.</div>
+        <div class="guide-item">✍️ <b>내 풀이 검토:</b> 사진 1장(문제+풀이 함께 기록) 또는 사진 2장을 올리면 잘한 부분과 실수한 오답 지점을 콕 짚어줍니다.</div>
         <div class="guide-item">📐 <b>수식 & 도형/원 그림:</b> 모든 수식은 세로 분수($\dfrac{a}{b}$), 원의 방정식 및 도형 문제 시 직관적인 그림 자동 생성!</div>
     </div>
     """,
@@ -348,9 +356,9 @@ if st.session_state.selected_mode is None:
     with col2:
         btn2_text = (
             "✍️ 내 풀이 검토 (연습장 오답 클리닉)\n\n"
-            "📷 문제 + 연습장 풀이 2장 필요\n\n"
-            "잘 접근한 부분과 어디서 개념/계산이\n"
-            "삐끗했는지 오답 위치를 콕 짚어줄게요!"
+            "📷 사진 1장 또는 2장 가능\n\n"
+            "문제와 풀이가 한 사진에 다 적혀있다면\n"
+            "사진 1장만 올려도 오답을 검토해 줄게요!"
         )
         if st.button(btn2_text, key="btn_mode2", use_container_width=True):
             st.session_state.selected_mode = "✍️ 내 풀이 검토 (문제 + 연습장)"
@@ -381,15 +389,15 @@ if mode == "❓ 스스로 풀어보기 (차근차근 질문)":
         "문제 사진 첨부", type=["jpg", "jpeg", "png"], key="prob_only"
     )
 else:
-    st.caption("📷 **문제 사진**과 **연습장 풀이 사진** 2장을 각각 첨부해 주세요.")
+    st.caption("📷 **사진을 첨부해 주세요.** (한 사진에 문제와 풀이가 함께 있다면 1번 상자에만 1장 올려주세요!)")
     up_col1, up_col2 = st.columns(2)
     with up_col1:
         uploaded_problem = st.file_uploader(
-            "1️⃣ 문제 사진 업로드", type=["jpg", "jpeg", "png"], key="prob_dual"
+            "1️⃣ 문제 사진 (또는 문제+풀이 사진)", type=["jpg", "jpeg", "png"], key="prob_dual"
         )
     with up_col2:
         uploaded_solution = st.file_uploader(
-            "2️⃣ 연습장 풀이 사진 업로드", type=["jpg", "jpeg", "png"], key="sol_dual"
+            "2️⃣ 연습장 풀이 사진 (선택 사항)", type=["jpg", "jpeg", "png"], key="sol_dual"
         )
 
 prob_id = uploaded_problem.file_id if uploaded_problem else "none"
@@ -434,12 +442,12 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
-                log_to_slack_and_gsheet(mode, "문제 사진 업로드 제출", bot_reply)
+                log_to_slack_and_gsheet(st.session_state.student_name, mode, "문제 사진 업로드 제출", bot_reply)
                 st.rerun()
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
 
-    elif mode == "✍️ 내 풀이 검토 (문제 + 연습장)" and uploaded_problem and uploaded_solution:
+    elif mode == "✍️ 내 풀이 검토 (문제 + 연습장)" and uploaded_problem:
         st.session_state.last_upload_key = curr_upload_key
         st.session_state.messages = []
 
@@ -447,9 +455,6 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
 
         uploaded_problem.seek(0)
         p_bytes = uploaded_problem.read()
-
-        uploaded_solution.seek(0)
-        s_bytes = uploaded_solution.read()
 
         content_blocks = [
             {
@@ -459,22 +464,29 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                     "media_type": uploaded_problem.type,
                     "data": base64.b64encode(p_bytes).decode("utf-8"),
                 },
-            },
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": uploaded_solution.type,
-                    "data": base64.b64encode(s_bytes).decode("utf-8"),
-                },
-            },
-            {
-                "type": "text",
-                "text": "[모드: 내 풀이 검토] 문제 사진과 연습장 풀이 사진이야. 연습장 풀이를 대조해서 잘 접근한 부분과 실수한 오답 지점을 지적해줘. (특히 원의 방정식, 도형의 방정식, 기하 문제는 100% 무조건 좌표평면에 원, 중심점, 반지름, 접선/직선 등을 보일 수 있는 matplotlib 그림 코드를 예외 없이 함께 출력해라)",
-            },
+            }
         ]
 
-        with st.spinner("다혜 쌤이 문제와 연습장 풀이를 대조 분석하는 중입니다..."):
+        if uploaded_solution:
+            uploaded_solution.seek(0)
+            s_bytes = uploaded_solution.read()
+            content_blocks.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": uploaded_solution.type,
+                        "data": base64.b64encode(s_bytes).decode("utf-8"),
+                    },
+                }
+            )
+            prompt_guide = "[모드: 내 풀이 검토] 문제 사진과 연습장 풀이 사진 2장이 전달되었어. 연습장 풀이를 대조해서 잘 접근한 부분과 실수한 오답 지점을 지적해줘. (특히 원의 방정식, 도형의 방정식, 기하 문제는 100% 무조건 좌표평면에 원, 중심점, 반지름, 접선/직선 등을 보일 수 있는 matplotlib 그림 코드를 예외 없이 함께 출력해라)"
+        else:
+            prompt_guide = "[모드: 내 풀이 검토] 이 사진 한 장 안에 문제와 학생이 직접 적은 풀이가 함께 들어있어. 인쇄된 문제와 학생의 손글씨 풀이를 함께 확인하여 잘 접근한 부분과 실수한 오답 지점을 콕 짚어줘. (특히 원의 방정식, 도형의 방정식, 기하 문제는 100% 무조건 좌표평면에 원, 중심점, 반지름, 접선/직선 등을 보일 수 있는 matplotlib 그림 코드를 예외 없이 함께 출력해라)"
+
+        content_blocks.append({"type": "text", "text": prompt_guide})
+
+        with st.spinner("다혜 쌤이 문제와 풀이를 대조 분석하는 중입니다..."):
             try:
                 response = client.messages.create(
                     model=MODEL_NAME,
@@ -486,7 +498,7 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
-                log_to_slack_and_gsheet(mode, "문제 + 연습장 풀이 사진 업로드 제출", bot_reply)
+                log_to_slack_and_gsheet(st.session_state.student_name, mode, "풀이 검토 사진 제출", bot_reply)
                 st.rerun()
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
@@ -526,9 +538,8 @@ if prompt := st.chat_input("다혜 쌤에게 답장하기 (예: 정답은 \\dfra
                     {"type": "text", "text": msg["content"]},
                 ]
                 api_messages.append({"role": "user", "content": content_blocks})
-            elif mode == "✍️ 내 풀이 검토 (문제 + 연습장)" and uploaded_problem and uploaded_solution:
+            elif mode == "✍️ 내 풀이 검토 (문제 + 연습장)" and uploaded_problem:
                 uploaded_problem.seek(0)
-                uploaded_solution.seek(0)
                 content_blocks = [
                     {
                         "type": "image",
@@ -537,17 +548,21 @@ if prompt := st.chat_input("다혜 쌤에게 답장하기 (예: 정답은 \\dfra
                             "media_type": uploaded_problem.type,
                             "data": base64.b64encode(uploaded_problem.read()).decode("utf-8"),
                         },
-                    },
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": uploaded_solution.type,
-                            "data": base64.b64encode(uploaded_solution.read()).decode("utf-8"),
-                        },
-                    },
-                    {"type": "text", "text": msg["content"]},
+                    }
                 ]
+                if uploaded_solution:
+                    uploaded_solution.seek(0)
+                    content_blocks.append(
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": uploaded_solution.type,
+                                "data": base64.b64encode(uploaded_solution.read()).decode("utf-8"),
+                            },
+                        }
+                    )
+                content_blocks.append({"type": "text", "text": msg["content"]})
                 api_messages.append({"role": "user", "content": content_blocks})
             else:
                 api_messages.append({"role": msg["role"], "content": msg["content"]})
@@ -568,6 +583,6 @@ if prompt := st.chat_input("다혜 쌤에게 답장하기 (예: 정답은 \\dfra
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
-                log_to_slack_and_gsheet(mode, prompt, bot_reply)
+                log_to_slack_and_gsheet(st.session_state.student_name, mode, prompt, bot_reply)
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
