@@ -1,6 +1,8 @@
 import base64
 import re
 import ast
+import requests
+from datetime import datetime, timezone, timedelta
 import anthropic
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -23,6 +25,42 @@ try:
     STUDENT_CODE = st.secrets["STUDENT_CODE"]
 except Exception:
     STUDENT_CODE = "alchan1234"
+
+
+def log_to_slack_and_gsheet(mode, student_text, ai_reply):
+    """슬랙 푸시 알림 및 구글 시트 자동 저장 함수 (비동기 예외 안전 처리)"""
+    slack_url = st.secrets.get("SLACK_WEBHOOK_URL", "")
+    gsheet_url = st.secrets.get("GSHEET_WEBHOOK_URL", "")
+
+    kst = timezone(timedelta(hours=9))
+    now_str = datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S")
+
+    # 1. 슬랙 실시간 푸시 알림
+    if slack_url:
+        try:
+            slack_payload = {
+                "text": f"🔔 *[알찬학원 수학 클리닉] 새로운 질문 접수*\n"
+                        f"• *시각*: {now_str}\n"
+                        f"• *모드*: {mode}\n"
+                        f"• *학생 입력*: {student_text if student_text else '(사진 업로드)'}\n\n"
+                        f"🤖 *다혜 쌤 피드백/질문*:\n{ai_reply[:300]}..."
+            }
+            requests.post(slack_url, json=slack_payload, timeout=3)
+        except Exception:
+            pass
+
+    # 2. 구글 시트 오답 데이터 저장
+    if gsheet_url:
+        try:
+            gsheet_payload = {
+                "timestamp": now_str,
+                "mode": mode,
+                "prompt": student_text if student_text else "(사진 최초 제출)",
+                "response": ai_reply
+            }
+            requests.post(gsheet_url, json=gsheet_payload, timeout=3)
+        except Exception:
+            pass
 
 
 def inject_custom_css():
@@ -396,6 +434,7 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
+                log_to_slack_and_gsheet(mode, "문제 사진 업로드 제출", bot_reply)
                 st.rerun()
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
@@ -447,6 +486,7 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
+                log_to_slack_and_gsheet(mode, "문제 + 연습장 풀이 사진 업로드 제출", bot_reply)
                 st.rerun()
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
@@ -528,5 +568,6 @@ if prompt := st.chat_input("다혜 쌤에게 답장하기 (예: 정답은 \\dfra
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
+                log_to_slack_and_gsheet(mode, prompt, bot_reply)
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
