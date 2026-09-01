@@ -135,33 +135,48 @@ def inject_custom_css():
         color: #000000 !important;
     }
 
-    /* 💡 메인 2개 모드 선택 대형 카드 버튼 (PC/기본) */
+    /* 💡 대형 카드 버튼 기본 구조 */
     div[data-testid="stKey-btn_mode1"] button,
     div[data-testid="stKey-btn_mode2"] button {
         width: 100% !important;
-        min-height: 240px !important;
+        min-height: 220px !important;
         white-space: pre-wrap !important;
         word-break: keep-all !important;
-        font-size: 1.1rem !important;
-        line-height: 1.75 !important;
         border-radius: 18px !important;
         border: 2.5px solid #3A449A !important;
         background-color: #FFFFFF !important;
-        color: #334155 !important;
         box-shadow: 0 6px 16px rgba(58, 68, 154, 0.08) !important;
         text-align: center !important;
-        padding: 1.8rem 1.2rem !important;
+        padding: 1.6rem 1rem !important;
         transition: all 0.25s ease-in-out !important;
     }
 
-    /* 첫 줄(제목) 강조 */
-    div[data-testid="stKey-btn_mode1"] button p::first-line,
-    div[data-testid="stKey-btn_mode2"] button p::first-line,
-    div[data-testid="stKey-btn_mode1"] button div::first-line,
-    div[data-testid="stKey-btn_mode2"] button div::first-line {
+    /* 💡 제목(h3), 부제목(h5), 세부 설명(p) 각각 폰트 크기 명확하게 구분 */
+    div[data-testid="stKey-btn_mode1"] button h3,
+    div[data-testid="stKey-btn_mode2"] button h3 {
         font-size: 1.45rem !important;
         font-weight: 800 !important;
         color: #3A449A !important;
+        margin: 0 0 0.2rem 0 !important;
+        line-height: 1.3 !important;
+    }
+
+    div[data-testid="stKey-btn_mode1"] button h5,
+    div[data-testid="stKey-btn_mode2"] button h5 {
+        font-size: 1.1rem !important;
+        font-weight: 700 !important;
+        color: #00A19D !important;
+        margin: 0 0 0.8rem 0 !important;
+        line-height: 1.3 !important;
+    }
+
+    div[data-testid="stKey-btn_mode1"] button p,
+    div[data-testid="stKey-btn_mode2"] button p {
+        font-size: 0.92rem !important;
+        font-weight: 500 !important;
+        color: #475569 !important;
+        line-height: 1.5 !important;
+        margin: 0 !important;
     }
 
     div[data-testid="stKey-btn_mode1"] button:hover,
@@ -172,24 +187,28 @@ def inject_custom_css():
         transform: translateY(-3px) !important;
     }
 
-    /* 📱 핸드폰(모바일) 화면 전용 스타일 (768px 이하) */
+    /* 📱 모바일 화면 (768px 이하) 반응형 크기 조절 */
     @media (max-width: 768px) {
         div[data-testid="stKey-btn_mode1"] button,
         div[data-testid="stKey-btn_mode2"] button {
-            min-height: 210px !important;
-            padding: 1.5rem 1rem !important;
-            font-size: 1.05rem !important;
-            line-height: 1.65 !important;
+            min-height: 200px !important;
+            padding: 1.2rem 0.8rem !important;
             margin-bottom: 0.8rem !important;
         }
 
-        div[data-testid="stKey-btn_mode1"] button p::first-line,
-        div[data-testid="stKey-btn_mode2"] button p::first-line,
-        div[data-testid="stKey-btn_mode1"] button div::first-line,
-        div[data-testid="stKey-btn_mode2"] button div::first-line {
-            font-size: 1.35rem !important;
-            font-weight: 800 !important;
-            color: #3A449A !important;
+        div[data-testid="stKey-btn_mode1"] button h3,
+        div[data-testid="stKey-btn_mode2"] button h3 {
+            font-size: 1.3rem !important;
+        }
+
+        div[data-testid="stKey-btn_mode1"] button h5,
+        div[data-testid="stKey-btn_mode2"] button h5 {
+            font-size: 1.0rem !important;
+        }
+
+        div[data-testid="stKey-btn_mode1"] button p,
+        div[data-testid="stKey-btn_mode2"] button p {
+            font-size: 0.88rem !important;
         }
     }
 
@@ -369,8 +388,8 @@ if st.session_state.selected_mode is None:
 
     with col1:
         btn1_text = (
-            "❓ 풀이가 막혔어요\n"
-            "(스스로 풀어보기)\n\n"
+            "### ❓ 풀이가 막혔어요\n"
+            "##### (스스로 풀어보기)\n\n"
             "📷 문제 사진 1장 필요\n"
             "정답 대신 스스로 답을 찾아갈 수 있게\n"
             "다혜 쌤이 차근차근 질문을 던져줄게요!"
@@ -381,8 +400,8 @@ if st.session_state.selected_mode is None:
 
     with col2:
         btn2_text = (
-            "✍️ 내 풀이 검토\n"
-            "(연습장 오답 클리닉)\n\n"
+            "### ✍️ 내 풀이 검토\n"
+            "##### (연습장 오답 클리닉)\n\n"
             "📷 사진 1장 또는 2장 가능\n"
             "문제와 풀이가 한 사진에 다 적혀있다면\n"
             "사진 1장만 올려도 오답을 검토해 줄게요!"
