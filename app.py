@@ -135,7 +135,7 @@ def inject_custom_css():
         color: #000000 !important;
     }
 
-    /* 💡 대형 카드 버튼 기본 구조 */
+    /* 💡 대형 카드 버튼 스타일 정의 */
     div[data-testid="stKey-btn_mode1"] button,
     div[data-testid="stKey-btn_mode2"] button {
         width: 100% !important;
@@ -151,25 +151,30 @@ def inject_custom_css():
         transition: all 0.25s ease-in-out !important;
     }
 
-    /* 💡 제목(h3), 부제목(h5), 세부 설명(p) 각각 폰트 크기 명확하게 구분 */
-    div[data-testid="stKey-btn_mode1"] button h3,
-    div[data-testid="stKey-btn_mode2"] button h3 {
+    /* 1. 제목 (**볼드**): 크고 굵은 남색 글씨 */
+    div[data-testid="stKey-btn_mode1"] button strong,
+    div[data-testid="stKey-btn_mode2"] button strong {
         font-size: 1.45rem !important;
         font-weight: 800 !important;
         color: #3A449A !important;
-        margin: 0 0 0.2rem 0 !important;
+        display: block !important;
+        margin-bottom: 0.2rem !important;
         line-height: 1.3 !important;
     }
 
-    div[data-testid="stKey-btn_mode1"] button h5,
-    div[data-testid="stKey-btn_mode2"] button h5 {
-        font-size: 1.1rem !important;
+    /* 2. 부제목 (*기울임*): 중형 폰트 민트색 (기울임 해제) */
+    div[data-testid="stKey-btn_mode1"] button em,
+    div[data-testid="stKey-btn_mode2"] button em {
+        font-size: 1.05rem !important;
         font-weight: 700 !important;
+        font-style: normal !important;
         color: #00A19D !important;
-        margin: 0 0 0.8rem 0 !important;
+        display: block !important;
+        margin-bottom: 0.8rem !important;
         line-height: 1.3 !important;
     }
 
+    /* 3. 본문 세부 설명 */
     div[data-testid="stKey-btn_mode1"] button p,
     div[data-testid="stKey-btn_mode2"] button p {
         font-size: 0.92rem !important;
@@ -196,13 +201,13 @@ def inject_custom_css():
             margin-bottom: 0.8rem !important;
         }
 
-        div[data-testid="stKey-btn_mode1"] button h3,
-        div[data-testid="stKey-btn_mode2"] button h3 {
+        div[data-testid="stKey-btn_mode1"] button strong,
+        div[data-testid="stKey-btn_mode2"] button strong {
             font-size: 1.3rem !important;
         }
 
-        div[data-testid="stKey-btn_mode1"] button h5,
-        div[data-testid="stKey-btn_mode2"] button h5 {
+        div[data-testid="stKey-btn_mode1"] button em,
+        div[data-testid="stKey-btn_mode2"] button em {
             font-size: 1.0rem !important;
         }
 
@@ -247,7 +252,7 @@ def get_response_text(response):
 def is_safe_matplotlib_code(code_str):
     """모델이 생성한 도형 코드를 exec 하기 전 AST 화이트리스트로 검증한다.
 
-    - import 문 금지
+    - import 문 금지 (필요한 모듈은 이미 스코프에 제공됨)
     - 밑줄(_)로 시작하는 모든 속성 접근 금지 (__getattribute__/__class__ 등 우회 차단)
     - 던더 이름 금지, 파일/OS/네트워크 관련 속성 금지
     - 허용된 내장 함수 외의 이름 호출 금지 (getattr/eval/exec/open 등 차단)
@@ -317,10 +322,10 @@ def render_assistant_content(content):
 def load_system_prompt():
     default_prompt = (
         "너는 친절하고 실력 있는 알찬학원 수학 강사 신다혜 선생님이다.\n\n"
-        "[강력 수식 & LaTeX 규칙 - 필수 준수]\n"
+        "[강력 수식 & 시각화 그림 규칙 - 필수 준수]\n"
         "1. 모든 수학 공식, 수식, 변수(x, y, a, b 등), 숫자 식, 방정식, 기호는 예외 없이 100% LaTeX 표기법(`$ ... $` 또는 `$$ ... $$`)으로 작성해라.\n"
         "2. 분수를 작성할 때 가로 형태(1/2, a/b)는 절대 사용하지 말고, 반드시 문제집처럼 세로 분수 형태인 `\\dfrac{a}{b}`를 사용해라.\n"
-        "3. 원의 방정식, 도형/기하 문제 시 반드시 무조건 matplotlib 도형/원 시각화 코드를 생성해라."
+        "3. 원의 방정식, 이차함수, 도형, 기하, 그래프 문제가 나오면 반드시 예외 없이 무조건 matplotlib 시각화 코드 블록(```python ... ```)을 작성해라."
     )
     try:
         with open("system_prompt.txt", "r", encoding="utf-8") as f:
@@ -388,8 +393,8 @@ if st.session_state.selected_mode is None:
 
     with col1:
         btn1_text = (
-            "### ❓ 풀이가 막혔어요\n"
-            "##### (스스로 풀어보기)\n\n"
+            "**❓ 풀이가 막혔어요**\n"
+            "*(스스로 풀어보기)*\n\n"
             "📷 문제 사진 1장 필요\n"
             "정답 대신 스스로 답을 찾아갈 수 있게\n"
             "다혜 쌤이 차근차근 질문을 던져줄게요!"
@@ -400,8 +405,8 @@ if st.session_state.selected_mode is None:
 
     with col2:
         btn2_text = (
-            "### ✍️ 내 풀이 검토\n"
-            "##### (연습장 오답 클리닉)\n\n"
+            "**✍️ 내 풀이 검토**\n"
+            "*(연습장 오답 클리닉)*\n\n"
             "📷 사진 1장 또는 2장 가능\n"
             "문제와 풀이가 한 사진에 다 적혀있다면\n"
             "사진 1장만 올려도 오답을 검토해 줄게요!"
@@ -472,7 +477,7 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
             },
             {
                 "type": "text",
-                "text": "[모드: 스스로 풀어보기] 학생이 풀다가 막혀서 문제 사진을 올렸어. 정답이나 전체 풀이를 바로 주지 말고, 스스로 고민해서 답을 찾을 수 있게 첫 번째 개념 질문만 건네줘. (특히 원의 방정식, 도형의 방정식, 기하 문제는 100% 무조건 좌표평면에 원, 중심점, 반지름, 접선/직선 등을 보일 수 있는 matplotlib 그림 코드를 예외 없이 함께 출력해라)",
+                "text": "[모드: 스스로 풀어보기] 학생이 풀다가 막혀서 문제 사진을 올렸어. 정답이나 전체 풀이를 바로 주지 말고, 스스로 고민해서 답을 찾을 수 있게 첫 번째 개념 질문만 건네줘. (특히 원의 방정식, 이차함수, 도형의 방정식, 기하, 그래프 문제는 100% 무조건 좌표평면에 원, 중심점, 반지름, 접선, 그래프 등을 보일 수 있는 ```python 코드 블록으로 matplotlib 그림 코드를 작성해라)",
             },
         ]
 
@@ -526,9 +531,9 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                     },
                 }
             )
-            prompt_guide = "[모드: 내 풀이 검토] 문제 사진과 연습장 풀이 사진 2장이 전달되었어. 연습장 풀이를 대조해서 잘 접근한 부분과 실수한 오답 지점을 지적해줘. (특히 원의 방정식, 도형의 방정식, 기하 문제는 100% 무조건 좌표평면에 원, 중심점, 반지름, 접선/직선 등을 보일 수 있는 matplotlib 그림 코드를 예외 없이 함께 출력해라)"
+            prompt_guide = "[모드: 내 풀이 검토] 문제 사진과 연습장 풀이 사진 2장이 전달되었어. 연습장 풀이를 대조해서 잘 접근한 부분과 실수한 오답 지점을 지적해줘. (특히 원의 방정식, 이차함수, 도형의 방정식, 기하, 그래프 문제는 100% 무조건 좌표평면에 원, 중심점, 반지름, 접선, 그래프 등을 보일 수 있는 ```python 코드 블록으로 matplotlib 그림 코드를 작성해라)"
         else:
-            prompt_guide = "[모드: 내 풀이 검토] 이 사진 한 장 안에 문제와 학생이 직접 적은 풀이가 함께 들어있어. 인쇄된 문제와 학생의 손글씨 풀이를 함께 확인하여 잘 접근한 부분과 실수한 오답 지점을 콕 짚어줘. (특히 원의 방정식, 도형의 방정식, 기하 문제는 100% 무조건 좌표평면에 원, 중심점, 반지름, 접선/직선 등을 보일 수 있는 matplotlib 그림 코드를 예외 없이 함께 출력해라)"
+            prompt_guide = "[모드: 내 풀이 검토] 이 사진 한 장 안에 문제와 학생이 직접 적은 풀이가 함께 들어있어. 인쇄된 문제와 학생의 손글씨 풀이를 함께 확인하여 잘 접근한 부분과 실수한 오답 지점을 콕 짚어줘. (특히 원의 방정식, 이차함수, 도형의 방정식, 기하, 그래프 문제는 100% 무조건 좌표평면에 원, 중심점, 반지름, 접선, 그래프 등을 보일 수 있는 ```python 코드 블록으로 matplotlib 그림 코드를 작성해라)"
 
         content_blocks.append({"type": "text", "text": prompt_guide})
 
