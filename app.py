@@ -139,9 +139,7 @@ def inject_custom_css():
     div[data-testid="stKey-btn_mode1"] button,
     div[data-testid="stKey-btn_mode2"] button {
         width: 100% !important;
-        min-height: 220px !important;
-        white-space: pre-wrap !important;
-        word-break: keep-all !important;
+        min-height: 230px !important;
         border-radius: 18px !important;
         border: 2.5px solid #3A449A !important;
         background-color: #FFFFFF !important;
@@ -149,6 +147,22 @@ def inject_custom_css():
         text-align: center !important;
         padding: 1.6rem 1rem !important;
         transition: all 0.25s ease-in-out !important;
+    }
+
+    /* 버튼 내부 모든 요소 강제 줄바꿈 및 pre-wrap 설정 */
+    div[data-testid="stKey-btn_mode1"] button *,
+    div[data-testid="stKey-btn_mode2"] button * {
+        white-space: pre-wrap !important;
+        word-break: keep-all !important;
+    }
+
+    div[data-testid="stKey-btn_mode1"] button p,
+    div[data-testid="stKey-btn_mode2"] button p {
+        margin: 0.3rem 0 !important;
+        line-height: 1.55 !important;
+        font-size: 0.92rem !important;
+        font-weight: 500 !important;
+        color: #475569 !important;
     }
 
     /* 1. 제목 (**볼드**): 크고 굵은 남색 글씨 */
@@ -170,18 +184,8 @@ def inject_custom_css():
         font-style: normal !important;
         color: #00A19D !important;
         display: block !important;
-        margin-bottom: 0.8rem !important;
+        margin-bottom: 0.6rem !important;
         line-height: 1.3 !important;
-    }
-
-    /* 3. 본문 세부 설명 */
-    div[data-testid="stKey-btn_mode1"] button p,
-    div[data-testid="stKey-btn_mode2"] button p {
-        font-size: 0.92rem !important;
-        font-weight: 500 !important;
-        color: #475569 !important;
-        line-height: 1.5 !important;
-        margin: 0 !important;
     }
 
     div[data-testid="stKey-btn_mode1"] button:hover,
@@ -196,7 +200,7 @@ def inject_custom_css():
     @media (max-width: 768px) {
         div[data-testid="stKey-btn_mode1"] button,
         div[data-testid="stKey-btn_mode2"] button {
-            min-height: 200px !important;
+            min-height: 210px !important;
             padding: 1.2rem 0.8rem !important;
             margin-bottom: 0.8rem !important;
         }
@@ -395,8 +399,8 @@ if st.session_state.selected_mode is None:
         btn1_text = (
             "**❓ 풀이가 막혔어요**\n"
             "*(스스로 풀어보기)*\n\n"
-            "📷 문제 사진 1장 필요\n"
-            "정답 대신 스스로 답을 찾아갈 수 있게\n"
+            "📷 문제 사진 1장 필요\n\n"
+            "정답 대신 스스로 답을 찾아갈 수 있게\n\n"
             "다혜 쌤이 차근차근 질문을 던져줄게요!"
         )
         if st.button(btn1_text, key="btn_mode1", use_container_width=True):
@@ -407,8 +411,8 @@ if st.session_state.selected_mode is None:
         btn2_text = (
             "**✍️ 내 풀이 검토**\n"
             "*(연습장 오답 클리닉)*\n\n"
-            "📷 사진 1장 또는 2장 가능\n"
-            "문제와 풀이가 한 사진에 다 적혀있다면\n"
+            "📷 사진 1장 또는 2장 가능\n\n"
+            "문제와 풀이가 한 사진에 다 적혀있다면\n\n"
             "사진 1장만 올려도 오답을 검토해 줄게요!"
         )
         if st.button(btn2_text, key="btn_mode2", use_container_width=True):
