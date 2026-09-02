@@ -9,6 +9,11 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
 
+try:
+    from youtube_transcript_api import YouTubeTranscriptApi
+except ImportError:
+    YouTubeTranscriptApi = None
+
 st.set_page_config(
     page_title="알찬학원 신다혜 쌤의 1:1 수학 클리닉",
     page_icon="✏️",
@@ -26,8 +31,10 @@ try:
 except Exception:
     MASTER_PW = "1234"
 
+ADMIN_PW = st.secrets.get("ADMIN_CODE", "admin")
 
-def log_to_slack_and_gsheet(student_name, student_grade, mode, student_text, ai_reply):
+
+def log_to_slack_and_gsheet(student_name, student_grade, mode, student_text, ai_reply, is_sos=False):
     slack_webhook_url = st.secrets.get("SLACK_WEBHOOK_URL", "")
     slack_bot_token = st.secrets.get("SLACK_BOT_TOKEN", "")
     slack_channel_id = st.secrets.get("SLACK_CHANNEL_ID", "")
@@ -37,6 +44,7 @@ def log_to_slack_and_gsheet(student_name, student_grade, mode, student_text, ai_
     now_str = datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S")
 
     thread_ts = st.session_state.get("slack_thread_ts", None)
+    prefix = "🚨 *[SOS 다혜 쌤 직접 호출!]*" if is_sos else "🔔 *[알찬학원 수학 클리닉]*"
 
     if slack_bot_token and slack_channel_id:
         try:
@@ -46,12 +54,12 @@ def log_to_slack_and_gsheet(student_name, student_grade, mode, student_text, ai_
             }
             payload = {
                 "channel": slack_channel_id,
-                "text": f"🔔 *[알찬학원 수학 클리닉] 질문 접수*\n"
+                "text": f"{prefix}\n"
                         f"• *학생*: {student_name} ({student_grade})\n"
                         f"• *시각*: {now_str}\n"
                         f"• *모드*: {mode}\n"
                         f"• *입력*: {student_text if student_text else '(사진 업로드)'}\n\n"
-                        f"🤖 *답변 요약*:\n{ai_reply[:300]}..."
+                        f"🤖 *AI 전달 내용*:\n{ai_reply[:300]}..."
             }
             if thread_ts:
                 payload["thread_ts"] = thread_ts
@@ -65,12 +73,12 @@ def log_to_slack_and_gsheet(student_name, student_grade, mode, student_text, ai_
     elif slack_webhook_url:
         try:
             slack_payload = {
-                "text": f"🔔 *[알찬학원 수학 클리닉] 질문 접수*\n"
+                "text": f"{prefix}\n"
                         f"• *학생*: {student_name} ({student_grade})\n"
                         f"• *시각*: {now_str}\n"
                         f"• *모드*: {mode}\n"
                         f"• *입력*: {student_text if student_text else '(사진 업로드)'}\n\n"
-                        f"🤖 *답변 요약*:\n{ai_reply[:300]}..."
+                        f"🤖 *AI 전달 내용*:\n{ai_reply[:300]}..."
             }
             if thread_ts:
                 slack_payload["thread_ts"] = thread_ts
@@ -78,7 +86,7 @@ def log_to_slack_and_gsheet(student_name, student_grade, mode, student_text, ai_
         except Exception:
             pass
 
-    if gsheet_url:
+    if gsheet_url and not is_sos:
         try:
             gsheet_payload = {
                 "timestamp": now_str,
@@ -352,7 +360,7 @@ def load_system_prompt(student_grade):
     custom_notes = ""
     try:
         with open("custom_notes.txt", "r", encoding="utf-8") as f:
-            custom_notes = "\n\n[선생님 전용 개념 및 단원별 풀이 규칙]:\n" + f.read()
+            custom_notes = "\n\n[선생님 전용 강의 및 단원별 풀이 노하우]:\n" + f.read()
     except FileNotFoundError:
         pass
 
@@ -364,17 +372,16 @@ def load_system_prompt(student_grade):
         "★ [필수 2단계 정교한 문제 분석 프로세스]:\n"
         f"1. **1단계 (4단계 세부 유형 선 판별):** 전달받은 문제를 보자마자 시중 표준 분류 체계에 맞춰 4단계로 세부 출제 유형을 명시해라. (예: `📌 [출제 유형: {student_grade} > 대단원명 > 중단원명 > 세부 대표유형명]`)\n"
         "2. **2단계 (교과범위 내 힌트 제공):** 오직 해당 세부 유형에서 다루는 표준 개념과 공식만 사용하여 학생에게 질문이나 힌트를 던져라. 타 단원이나 상위 학년 개념(예: 미분, 적분 등)은 절대 사용하지 마라.\n\n"
-        "★ [도형/기하 문제 범용 사고 원칙 & 계산 환각 방지 가드레일]:\n"
-        "① 이미지 상에 직접 그려져 있지 않은 선을 마음대로 있다고 단정지어 엉터리 각도나 길이를 섣불리 계산하지 마라.\n"
-        "② 문제 텍스트에 '접선', '두 원의 교점', '접점', '내접/외접' 등의 조건 키워드가 보이면 아래 수학적 발상을 최우선으로 검토해라:\n"
-        "   - 접선과 현이 이루는 각 (접현각 = 원주각)\n"
-        "   - 두 원의 교점을 잇는 '공통현' 보조선\n"
-        "   - 원에 내접하는 사각형/삼각형의 성질\n"
-        "③ 보조선이 없어서 각도가 바로 안 보이는 기하 문제라면, 숫자를 어설프게 계산하지 말고 학생에게 '어느 점과 점을 이어서 보조선을 그려보면 좋을까?'라고 보조선을 긋도록 질문을 건네라.\n\n"
+        "★ [✍️ 연습장 오답 검토 모드 전용 가드레일]:\n"
+        "- 학생의 손글씨 풀이 사진이 들어오면, 첫 줄부터 줄 단위로 연산 정밀 검증을 수행해라.\n"
+        "- 부호 실수(+- 바뀜), 통분 실수, 분배법칙 오류, 이항 실수가 발생한 정확한 위치를 콕 짚어 다정하게 설명해라.\n\n"
+        "★ [도형/기하 문제 안전 가드레일 & SOS 권유]:\n"
+        "- 이미지 상에 그려져 있지 않은 보조선을 지어내서 섣불리 계산하지 마라.\n"
+        "- 두 원의 교점, 접선, 보조선이 필요한 고난도 도형 문제인 경우, 엉터리 각도를 계산하지 말고 핵심 발상(접현각, 공통현)만 짚어준 뒤 아래와 같이 안내해라:\n"
+        "  '이 문제는 보조선 발상이 필요한 멋진 도형 문제야! 아래 [🆘 다혜 쌤 SOS 요청하기] 버튼을 누르면 다혜 쌤이 직접 명품 보조선 힌트를 줄 거야!'\n\n"
         "3. 학생이 답을 요구하더라도 절대 전체 풀이나 최종 정답을 직접 내주지 마라.\n"
-        "4. 수학 외 질문은 유연하게 수학 공부로 돌려라.\n"
-        "5. 모든 수식은 예외 없이 100% LaTeX 표기법(`$ ... $` 또는 `$$ ... $$`)을 사용하고, 분수는 반드시 세로 분수(`\\dfrac{a}{b}`)로 작성해라.\n"
-        "6. 원의 방정식, 이차함수, 도형, 기하 문제 시 반드시 좌표평면에 시각화된 matplotlib 코드 블록(```python ... ```)을 함께 출력해라."
+        "4. 모든 수식은 예외 없이 100% LaTeX 표기법(`$ ... $` 또는 `$$ ... $$`)을 사용해라.\n"
+        "5. 원의 방정식, 이차함수, 도형 문제 시 matplotlib 시각화 코드를 함께 출력해라."
         f"{custom_notes}"
     )
     return default_prompt
@@ -382,6 +389,8 @@ def load_system_prompt(student_grade):
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
+if "is_admin" not in st.session_state:
+    st.session_state.is_admin = False
 if "student_name" not in st.session_state:
     st.session_state.student_name = ""
 if "student_grade" not in st.session_state:
@@ -405,16 +414,76 @@ if not st.session_state.authenticated:
 
     if st.button("🔓 클리닉 입장하기", use_container_width=True):
         clean_name = input_name.strip()
-        if not clean_name:
+        if input_pw == ADMIN_PW:
+            st.session_state.authenticated = True
+            st.session_state.is_admin = True
+            st.session_state.student_name = "신다혜 선생님 (관리자)"
+            st.success("👑 선생님 관리자 모드로 접속했습니다!")
+            st.rerun()
+        elif not clean_name:
             st.error("이름을 입력해 주세요!")
         elif input_pw == MASTER_PW or input_pw == "1234":
             st.session_state.authenticated = True
+            st.session_state.is_admin = False
             st.session_state.student_name = clean_name
             st.session_state.student_grade = input_grade
             st.success(f"{clean_name} 학생 ({input_grade}), 환영해! 공부를 시작해 볼까?")
             st.rerun()
         else:
             st.error("비밀번호가 올바르지 않습니다. 선생님에게 문의해 주세요!")
+    st.stop()
+
+# 👑 선생님 관리자 전용 대시보드
+if st.session_state.is_admin:
+    st.markdown("---")
+    st.subheader("👑 신다혜 선생님 전용 관리자 모드")
+    st.caption("학생들에게는 보이지 않는 관리자 화면입니다. 노하우 데이터를 관리하세요.")
+
+    tab1, tab2 = st.tabs(["🎬 유튜브 수업 대본 추출기", "📝 custom_notes.txt 직접 수정"])
+
+    with tab1:
+        st.markdown("#### 🎬 유튜브 수업 영상 대본 자동 등록")
+        yt_url = st.text_input("유튜브 영상 링크 (예: https://www.youtube.com/watch?v=...):")
+        yt_topic = st.text_input("단원/주제명 (예: 중3-2 원주각과 접현각 특강):")
+
+        if st.button("🚀 대본 추출 후 AI 학습 데이터로 추가", use_container_width=True):
+            if not yt_url:
+                st.error("유튜브 링크를 입력해 주세요.")
+            elif YouTubeTranscriptApi is None:
+                st.error("youtube_transcript_api 라이브러리가 설치되지 않았습니다.")
+            else:
+                try:
+                    video_id = yt_url.split("v=")[-1].split("&")[0].split("/")[-1]
+                    transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko', 'en'])
+                    script_text = "\n".join([item['text'] for item in transcript])
+                    note_content = f"\n\n[다혜 쌤 현장 강의 대본: {yt_topic}]\n{script_text}\n"
+
+                    with open("custom_notes.txt", "a", encoding="utf-8") as f:
+                        f.write(note_content)
+                    st.success(f"✅ '{yt_topic}' 대본이 AI 학습 데이터에 추가되었습니다!")
+                except Exception as e:
+                    st.error(f"대본 추출 실패: {e}")
+
+    with tab2:
+        st.markdown("#### 📝 custom_notes.txt 노하우 데이터 직접 관리")
+        curr_notes = ""
+        try:
+            with open("custom_notes.txt", "r", encoding="utf-8") as f:
+                curr_notes = f.read()
+        except FileNotFoundError:
+            curr_notes = ""
+
+        updated_notes = st.text_area("custom_notes.txt 내용", value=curr_notes, height=300)
+        if st.button("💾 노하우 내용 저장하기", use_container_width=True):
+            with open("custom_notes.txt", "w", encoding="utf-8") as f:
+                f.write(updated_notes)
+            st.success("✅ 선생님 노하우 파일이 성공적으로 저장되었습니다!")
+
+    st.markdown("---")
+    if st.button("🔒 관리자 로그아웃 (학생 로그인 화면으로)", use_container_width=True):
+        st.session_state.authenticated = False
+        st.session_state.is_admin = False
+        st.rerun()
     st.stop()
 
 if "messages" not in st.session_state:
@@ -434,16 +503,14 @@ if st.session_state.selected_mode is None:
     <div class="guide-box">
         <div class="guide-title">💡 클리닉 이용 안내</div>
         <div class="guide-item">❓ <b>풀이가 막혔어요:</b> 문제 사진 1장을 올리면, 정답 대신 스스로 답을 찾아갈 수 있게 질문을 던져줍니다.</div>
-        <div class="guide-item">✍️ <b>내 풀이 검토:</b> 사진 1장(문제+풀이 함께 기록) 또는 사진 2장을 올리면 잘한 부분과 실수한 오답 지점을 콕 짚어줍니다.</div>
-        <div class="guide-item">📐 <b>수식 & 도형/원 그림:</b> 모든 수식은 세로 분수($\dfrac{a}{b}$), 원의 방정식 및 도형 문제 시 직관적인 그림 자동 생성!</div>
+        <div class="guide-item">✍️ <b>내 풀이 검토:</b> 사진 1장 또는 2장을 올리면 연습장 손글씨 풀이의 연산 실수를 콕 짚어줍니다.</div>
+        <div class="guide-item">📐 <b>수식 & 도형 그림:</b> 모든 수식은 세로 분수($\dfrac{a}{b}$), 도형 문제 시 시각화 그림 자동 생성!</div>
     </div>
     """,
         unsafe_allow_html=True,
     )
 
     st.markdown("### 💡 어떤 도움이 필요하신가요?")
-    st.caption("아래 카드 중 원하는 진단 방식을 선택해 주세요.")
-
     col1, col2 = st.columns(2)
 
     with col1:
@@ -464,8 +531,8 @@ if st.session_state.selected_mode is None:
             "**✍️ 내 풀이 검토**\n"
             "*(연습장 오답 클리닉)*\n\n"
             "📷 사진 1장 또는 2장 가능\n\n"
-            "문제와 풀이가 한 사진에 다 적혀있다면\n\n"
-            "사진 1장만 올려도 오답을 검토해 줄게요!"
+            "연습장 손글씨 풀이를 함께 올리면\n\n"
+            "어느 줄에서 연산 실수가 났는지 찾아줄게요!"
         )
         if st.button(btn2_text, key="btn_mode2", use_container_width=True):
             st.session_state.selected_mode = "✍️ 내 풀이 검토 (문제 + 연습장)"
@@ -498,7 +565,7 @@ if mode == "❓ 스스로 풀어보기 (차근차근 질문)":
         "문제 사진 첨부", type=["jpg", "jpeg", "png"], key="prob_only"
     )
 else:
-    st.caption("📷 **사진을 첨부해 주세요.** (한 사진에 문제와 풀이가 함께 있다면 1번 상자에만 1장 올려주세요!)")
+    st.caption("📷 **사진을 첨부해 주세요.** (연습장 풀이와 함께 올리면 오답 검토가 더욱 정밀해집니다)")
     up_col1, up_col2 = st.columns(2)
     with up_col1:
         uploaded_problem = st.file_uploader(
@@ -589,13 +656,13 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                     },
                 }
             )
-            prompt_guide = f"[모드: 내 풀이 검토 / 과목: {st.session_state.student_grade}] 먼저 1단계로 [과목 > 대단원 > 중단원 > 세부 대표유형명] 4단계로 세부 출제 유형을 밝히고, 2단계로 연습장 풀이를 대조하여 잘한 점과 실수한 오답 지점을 지적해라."
+            prompt_guide = f"[모드: 내 풀이 검토 / 과목: {st.session_state.student_grade}] 문제 사진과 연습장 손글씨 풀이 사진 2장이 전달되었어. 첫 줄부터 줄 단위로 연산을 검증해서 잘한 점과 부호/계산 실수가 발생한 정확한 위치를 다정하게 지적해줘."
         else:
-            prompt_guide = f"[모드: 내 풀이 검토 / 과목: {st.session_state.student_grade}] 먼저 1단계로 [과목 > 대단원 > 중단원 > 세부 대표유형명] 4단계로 세부 출제 유형을 밝히고, 2단계로 문제 속 풀이를 분석하여 잘한 점과 실수한 오답 지점을 콕 짚어라."
+            prompt_guide = f"[모드: 내 풀이 검토 / 과목: {st.session_state.student_grade}] 이 사진 안의 손글씨 풀이를 첫 줄부터 줄 단위로 검증하여 잘한 점과 연산 실수가 발생한 정확한 위치를 콕 짚어라."
 
         content_blocks.append({"type": "text", "text": prompt_guide})
 
-        with st.spinner("문제와 풀이를 대조 분석하는 중입니다..."):
+        with st.spinner("손글씨 풀이를 줄 단위로 분석하는 중입니다..."):
             try:
                 response = client.messages.create(
                     model=MODEL_NAME,
@@ -618,6 +685,22 @@ for msg in st.session_state.messages:
             render_assistant_content(msg["content"])
         else:
             st.markdown(msg["content"])
+
+st.markdown("---")
+sos_col1, sos_col2 = st.columns([3, 1])
+with sos_col1:
+    st.caption("💡 이해가 잘 안 되거나 보조선 힌트가 필요하신가요?")
+with sos_col2:
+    if st.button("🆘 다혜 쌤 SOS 요청하기", use_container_width=True):
+        log_to_slack_and_gsheet(
+            st.session_state.student_name,
+            st.session_state.student_grade,
+            mode,
+            "학생이 직접 [🆘 다혜 쌤 SOS] 버튼 클릭!",
+            "다혜 쌤의 직접 한 줄 힌트가 필요합니다.",
+            is_sos=True
+        )
+        st.success("🚨 다혜 쌤에게 실시간 SOS가 전달되었습니다! 잠시만 기다려주세요.")
 
 if prompt := st.chat_input("답장하기 (예: 정답은 \\dfrac{1}{2} 같아!)"):
     if not api_key:
