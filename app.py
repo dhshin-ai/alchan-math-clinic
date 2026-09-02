@@ -135,7 +135,7 @@ def inject_custom_css():
         color: #000000 !important;
     }
 
-    /* 💡 대형 카드 버튼 스타일 정의 */
+    /* 대형 카드 버튼 스타일 정의 */
     div[data-testid="stKey-btn_mode1"] button,
     div[data-testid="stKey-btn_mode2"] button {
         width: 100% !important;
@@ -196,7 +196,7 @@ def inject_custom_css():
         transform: translateY(-3px) !important;
     }
 
-    /* 📱 모바일 화면 (768px 이하) 반응형 크기 조절 */
+    /* 모바일 화면 (768px 이하) 반응형 크기 조절 */
     @media (max-width: 768px) {
         div[data-testid="stKey-btn_mode1"] button,
         div[data-testid="stKey-btn_mode2"] button {
