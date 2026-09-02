@@ -54,6 +54,26 @@ def log_to_slack_and_gsheet(student_name, student_grade, mode, student_text, ai_
     thread_ts = st.session_state.get("slack_thread_ts", None)
     prefix = "🚨 *[SOS 다혜 쌤 직접 호출!]*" if is_sos else "🔔 *[알찬학원 수학 클리닉]*"
 
+    # 대화 이력 추출 (SOS 시 생략 없이 지금까지 주고받은 대화 통째로 슬랙에 전달)
+    chat_history_str = ""
+    if "messages" in st.session_state and st.session_state.messages:
+        history_lines = []
+        for msg in st.session_state.messages:
+            role_label = "👤 학생" if msg["role"] == "user" else "🤖 AI"
+            content_text = msg["content"] if isinstance(msg["content"], str) else "(사진 업로드)"
+            history_lines.append(f"{role_label}: {content_text}")
+        chat_history_str = "\n\n📜 *[지금까지 주고받은 대화 전체]*:\n" + "\n---\n".join(history_lines)
+
+    slack_text = (
+        f"{prefix}\n"
+        f"• *학생*: {student_name} ({student_grade})\n"
+        f"• *시각*: {now_str}\n"
+        f"• *모드*: {mode}\n"
+        f"• *최신 입력*: {student_text if student_text else '(사진 업로드)'}\n\n"
+        f"🤖 *AI 마지막 답변*:\n{ai_reply}"
+        f"{chat_history_str if is_sos else ''}"
+    )
+
     if slack_bot_token and slack_channel_id:
         try:
             headers = {
@@ -62,12 +82,7 @@ def log_to_slack_and_gsheet(student_name, student_grade, mode, student_text, ai_
             }
             payload = {
                 "channel": slack_channel_id,
-                "text": f"{prefix}\n"
-                        f"• *학생*: {student_name} ({student_grade})\n"
-                        f"• *시각*: {now_str}\n"
-                        f"• *모드*: {mode}\n"
-                        f"• *입력*: {student_text if student_text else '(사진 업로드)'}\n\n"
-                        f"🤖 *AI 전달 내용*:\n{ai_reply[:300]}..."
+                "text": slack_text
             }
             if thread_ts:
                 payload["thread_ts"] = thread_ts
@@ -80,14 +95,7 @@ def log_to_slack_and_gsheet(student_name, student_grade, mode, student_text, ai_
             pass
     elif slack_webhook_url:
         try:
-            slack_payload = {
-                "text": f"{prefix}\n"
-                        f"• *학생*: {student_name} ({student_grade})\n"
-                        f"• *시각*: {now_str}\n"
-                        f"• *모드*: {mode}\n"
-                        f"• *입력*: {student_text if student_text else '(사진 업로드)'}\n\n"
-                        f"🤖 *AI 전달 내용*:\n{ai_reply[:300]}..."
-            }
+            slack_payload = {"text": slack_text}
             if thread_ts:
                 slack_payload["thread_ts"] = thread_ts
             requests.post(slack_webhook_url, json=slack_payload, timeout=3)
