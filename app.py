@@ -360,8 +360,8 @@ def load_system_prompt(student_grade):
         "너는 친절하고 실력 있는 알찬학원 수학 선생님이다.\n"
         "말투는 학생에게 친근하고 다정한 반말('~해보자', '~했니?', '~란다')을 100% 사용해라.\n"
         "★ [이름 반복 언급 금지 경고]: 답변할 때 자기 자신을 3인칭('다혜 쌤은', '다혜 쌤이')으로 부르거나 자기 이름을 지겹게 반복해서 언급하지 마라. 인공지능 티를 내지 말고 바로 수학적인 설명과 힌트 질문에 집중해라.\n\n"
-        f"[현재 학생 학년 및 과정: {student_grade}]\n"
-        "1. 절대로 현재 선택된 교육과정을 넘어서는 상위 개념(예: 고1 수학인데 미분/적분 사용 금지)을 쓰지 말고, 해당 학년 수준에 맞는 공식과 개념으로만 풀어라.\n"
+        f"[현재 학생 2022 개정 교육과정 선택 과목: {student_grade}]\n"
+        "1. 절대로 현재 선택된 교육과정 과목을 넘어서는 상위 개념(예: 공통수학1 문제인데 미분/적분 개념 사용 금지)을 쓰지 말고, 선택한 과목 수준의 개념으로만 풀어라.\n"
         "2. 학생이 '바빠요', '급해요', '시간 없으니 답만 주세요'라고 떼쓰거나 요구하더라도 절대로 답이나 전체 풀이를 바로 주지 마라. 반드시 단계별 힌트 질문만 제공해라.\n"
         "3. 수학과 관련 없는 질문(일상 대화, 영어, 점심 메뉴 등)은 '지금은 수학 공부하는 시간이야! 수학 질문 가져와~' 하고 유연하게 수학으로 돌려라.\n"
         "4. 모든 수학 공식, 수식, 변수(x, y, a, b 등), 식, 기호는 예외 없이 100% LaTeX 표기법(`$ ... $` 또는 `$$ ... $$`)으로 작성해라.\n"
@@ -377,7 +377,7 @@ if "authenticated" not in st.session_state:
 if "student_name" not in st.session_state:
     st.session_state.student_name = ""
 if "student_grade" not in st.session_state:
-    st.session_state.student_grade = "고1 수학 (공통수학)"
+    st.session_state.student_grade = "공통수학1"
 if "slack_thread_ts" not in st.session_state:
     st.session_state.slack_thread_ts = None
 
@@ -386,12 +386,12 @@ st.title("✏️ 알찬학원 신다혜 쌤의 1:1 수학 클리닉")
 if not st.session_state.authenticated:
     st.markdown("---")
     st.subheader("🔒 수강생 입장하기")
-    st.caption("학생 본인의 이름과 학년, 선생님이 안내한 비밀번호를 입력해 주세요.")
+    st.caption("학생 본인의 이름과 2022 개정 교육과정에 맞춘 과목을 선택해 주세요.")
 
     input_name = st.text_input("학생 이름 (예: 김철수):")
     input_grade = st.selectbox(
-        "학년 / 과정 선택:",
-        ["고1 수학 (공통수학)", "중등 수학", "수학Ⅰ·Ⅱ", "미적분·확통·기하"]
+        "학년 / 과목 선택 (2022 개정 교육과정):",
+        ["중2", "중3", "공통수학1", "공통수학2", "대수", "미적분1", "미적분2", "확률과 통계", "기하와 벡터"]
     )
     input_pw = st.text_input("비밀번호:", type="password")
 
@@ -418,7 +418,7 @@ if "last_upload_key" not in st.session_state:
 
 system_prompt = load_system_prompt(st.session_state.student_grade)
 
-st.caption(f"👤 현재 접속 학생: **{st.session_state.student_name}** | 🎓 학년: **{st.session_state.student_grade}**")
+st.caption(f"👤 현재 접속 학생: **{st.session_state.student_name}** | 🎓 과목: **{st.session_state.student_grade}**")
 
 if st.session_state.selected_mode is None:
     st.markdown(
@@ -527,7 +527,7 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
             },
             {
                 "type": "text",
-                "text": f"[모드: 스스로 풀어보기 / 학년: {st.session_state.student_grade}] 학생이 풀다가 막혀서 문제 사진을 올렸어. 다정한 반말로 첫 번째 개념 질문만 건네줘. 절대 상위 학년 개념을 쓰지 말고, 답이나 전체 풀이를 다 주지 마. 자기 이름을 3인칭으로 부르며 반복하지 마라.",
+                "text": f"[모드: 스스로 풀어보기 / 과목: {st.session_state.student_grade}] 학생이 풀다가 막혀서 문제 사진을 올렸어. 다정한 반말로 첫 번째 개념 질문만 건네줘. 선택한 과목 수준을 넘어서는 개념을 쓰지 말고, 답이나 전체 풀이를 다 주지 마.",
             },
         ]
 
@@ -581,9 +581,9 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                     },
                 }
             )
-            prompt_guide = f"[모드: 내 풀이 검토 / 학년: {st.session_state.student_grade}] 문제 사진과 연습장 풀이 사진 2장이 전달되었어. 다정한 반말로 잘한 부분과 실수한 오답 지점을 짚어줘. 절대 상위 학년 개념을 쓰지 마. 자기 이름을 3인칭으로 부르며 반복하지 마라."
+            prompt_guide = f"[모드: 내 풀이 검토 / 과목: {st.session_state.student_grade}] 문제 사진과 연습장 풀이 사진 2장이 전달되었어. 다정한 반말로 잘한 부분과 실수한 오답 지점을 짚어줘. 선택 과목 범위를 넘어서는 개념을 쓰지 마."
         else:
-            prompt_guide = f"[모드: 내 풀이 검토 / 학년: {st.session_state.student_grade}] 이 사진 한 장 안에 문제와 학생이 직접 적은 풀이가 함께 들어있어. 다정한 반말로 잘한 부분과 실수한 오답 지점을 콕 짚어줘. 절대 상위 학년 개념을 쓰지 마. 자기 이름을 3인칭으로 부르며 반복하지 마라."
+            prompt_guide = f"[모드: 내 풀이 검토 / 과목: {st.session_state.student_grade}] 이 사진 한 장 안에 문제와 학생이 직접 적은 풀이가 함께 들어있어. 다정한 반말로 잘한 부분과 실수한 오답 지점을 콕 짚어줘. 선택 과목 범위를 넘어서는 개념을 쓰지 마."
 
         content_blocks.append({"type": "text", "text": prompt_guide})
 
