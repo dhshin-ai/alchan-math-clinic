@@ -34,6 +34,14 @@ except Exception:
 ADMIN_PW = st.secrets.get("ADMIN_CODE", "admin")
 
 
+def extract_youtube_id(url):
+    pattern = r'(?:v=|\/|vi=|\/v\/|shorts\/)([0-9A-Za-z_-]{11})'
+    match = re.search(pattern, url)
+    if match:
+        return match.group(1)
+    return None
+
+
 def log_to_slack_and_gsheet(student_name, student_grade, mode, student_text, ai_reply, is_sos=False):
     slack_webhook_url = st.secrets.get("SLACK_WEBHOOK_URL", "")
     slack_bot_token = st.secrets.get("SLACK_BOT_TOKEN", "")
@@ -445,22 +453,24 @@ if st.session_state.is_admin:
         yt_topic = st.text_input("단원/주제명 (예: 중3-2 원주각과 접현각 특강):")
 
         if st.button("🚀 대본 추출 후 AI 학습 데이터로 추가", use_container_width=True):
+            video_id = extract_youtube_id(yt_url)
             if not yt_url:
                 st.error("유튜브 링크를 입력해 주세요.")
+            elif not video_id:
+                st.error("유튜브 영상 ID를 올바르게 찾을 수 없습니다. 주소를 다시 확인해 주세요.")
             elif YouTubeTranscriptApi is None:
                 st.error("youtube_transcript_api 라이브러리가 설치되지 않았습니다.")
             else:
                 try:
-                    video_id = yt_url.split("v=")[-1].split("&")[0].split("/")[-1]
                     transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko', 'en'])
                     script_text = "\n".join([item['text'] for item in transcript])
                     note_content = f"\n\n[다혜 쌤 현장 강의 대본: {yt_topic}]\n{script_text}\n"
 
                     with open("custom_notes.txt", "a", encoding="utf-8") as f:
                         f.write(note_content)
-                    st.success(f"✅ '{yt_topic}' 대본이 AI 학습 데이터에 추가되었습니다!")
+                    st.success(f"✅ '{yt_topic}' 대본이 AI 학습 데이터에 추가되었습니다! (영상 ID: {video_id})")
                 except Exception as e:
-                    st.error(f"대본 추출 실패: {e}")
+                    st.error(f"대본 추출 실패: {e}\n\n💡 팁: 해당 유튜브 영상에 자막(또는 자동자막) 설정이 켜져 있는지 확인해 주세요!")
 
     with tab2:
         st.markdown("#### 📝 custom_notes.txt 노하우 데이터 직접 관리")
