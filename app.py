@@ -114,32 +114,10 @@ def inject_custom_css():
     <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
 
-    html, body, .stApp {
-        font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    }
-
-    [data-testid="stIcon"], i, [class*="icon"], [class*="material"] {
-        font-family: inherit !important;
-    }
-
-    .stApp {
-        background-color: #F8FAFC;
-    }
-    
-    [data-testid="stSidebar"] {
-        display: none;
-    }
-
-    h1, h2, h3 {
-        color: #3A449A !important;
-        font-weight: 800 !important;
-        word-break: keep-all !important;
-    }
-
-    h1 {
-        font-size: clamp(1.3rem, 4vw, 1.8rem) !important;
-        line-height: 1.35 !important;
-    }
+    html, body, .stApp { font-family: 'Pretendard', sans-serif; }
+    .stApp { background-color: #F8FAFC; }
+    [data-testid="stSidebar"] { display: none; }
+    h1, h2, h3 { color: #3A449A !important; font-weight: 800 !important; }
 
     .guide-box {
         background-color: #FFFFFF;
@@ -147,139 +125,45 @@ def inject_custom_css():
         border-radius: 12px;
         padding: 1.2rem 1.4rem;
         margin-bottom: 1.8rem;
-        box-shadow: 0 4px 12px rgba(58, 68, 154, 0.06);
     }
-    .guide-title {
-        color: #3A449A;
-        font-weight: 800;
-        font-size: 1.15rem;
-        margin-bottom: 0.6rem;
-    }
-    .guide-item {
-        color: #1E293B;
-        font-size: 0.98rem;
-        margin-bottom: 0.4rem;
-        line-height: 1.6;
-    }
+    .guide-title { color: #3A449A; font-weight: 800; font-size: 1.15rem; margin-bottom: 0.6rem; }
+    .guide-item { color: #1E293B; font-size: 0.98rem; margin-bottom: 0.4rem; line-height: 1.6; }
 
-    blockquote {
-        background-color: #FFFFFF !important;
-        border-left: 5px solid #00A19D !important;
-        border-radius: 12px !important;
-        padding: 1.2rem 1.5rem !important;
-        box-shadow: 0 4px 12px rgba(58, 68, 154, 0.08) !important;
-        margin: 1.2rem 0 !important;
-    }
-
-    blockquote *, blockquote p, blockquote li, blockquote span, blockquote div {
-        color: #000000 !important;
-        font-weight: 500 !important;
-        opacity: 1 !important;
-    }
-
-    .stChatMessage, .stChatMessage * {
-        color: #000000 !important;
-    }
-
-    div[data-testid="stKey-btn_mode1"] button,
-    div[data-testid="stKey-btn_mode2"] button {
+    /* 메인 모드 선택 버튼 2개 높이 및 카드 디자인 강제 고정 */
+    [data-testid="stHorizontalBlock"] div.stButton > button,
+    div[data-testid*="btn_mode"] button,
+    div[class*="btn_mode"] button {
         width: 100% !important;
-        min-height: 230px !important;
+        min-height: 220px !important;
         border-radius: 18px !important;
         border: 2.5px solid #3A449A !important;
         background-color: #FFFFFF !important;
         box-shadow: 0 6px 16px rgba(58, 68, 154, 0.08) !important;
         text-align: center !important;
-        padding: 1.6rem 1rem !important;
-        transition: all 0.25s ease-in-out !important;
-    }
-
-    div[data-testid="stKey-btn_mode1"] button *,
-    div[data-testid="stKey-btn_mode2"] button * {
+        padding: 1.5rem 1rem !important;
         white-space: pre-wrap !important;
         word-break: keep-all !important;
     }
 
-    div[data-testid="stKey-btn_mode1"] button p,
-    div[data-testid="stKey-btn_mode2"] button p {
-        margin: 0.3rem 0 !important;
-        line-height: 1.55 !important;
-        font-size: 0.92rem !important;
-        font-weight: 500 !important;
-        color: #475569 !important;
+    [data-testid="stHorizontalBlock"] div.stButton > button *,
+    div[data-testid*="btn_mode"] button * {
+        white-space: pre-wrap !important;
+        word-break: keep-all !important;
+        line-height: 1.6 !important;
     }
 
-    div[data-testid="stKey-btn_mode1"] button strong,
-    div[data-testid="stKey-btn_mode2"] button strong {
-        font-size: 1.45rem !important;
-        font-weight: 800 !important;
-        color: #3A449A !important;
-        display: block !important;
-        margin-bottom: 0.2rem !important;
-        line-height: 1.3 !important;
-    }
-
-    div[data-testid="stKey-btn_mode1"] button em,
-    div[data-testid="stKey-btn_mode2"] button em {
-        font-size: 1.05rem !important;
-        font-weight: 700 !important;
-        font-style: normal !important;
-        color: #00A19D !important;
-        display: block !important;
-        margin-bottom: 0.6rem !important;
-        line-height: 1.3 !important;
-    }
-
-    div[data-testid="stKey-btn_mode1"] button:hover,
-    div[data-testid="stKey-btn_mode2"] button:hover {
+    [data-testid="stHorizontalBlock"] div.stButton > button:hover {
         border-color: #00A19D !important;
         background-color: #F0FDFA !important;
         box-shadow: 0 10px 24px rgba(0, 161, 157, 0.18) !important;
         transform: translateY(-3px) !important;
     }
 
-    @media (max-width: 768px) {
-        div[data-testid="stKey-btn_mode1"] button,
-        div[data-testid="stKey-btn_mode2"] button {
-            min-height: 210px !important;
-            padding: 1.2rem 0.8rem !important;
-            margin-bottom: 0.8rem !important;
-        }
-
-        div[data-testid="stKey-btn_mode1"] button strong,
-        div[data-testid="stKey-btn_mode2"] button strong {
-            font-size: 1.3rem !important;
-        }
-
-        div[data-testid="stKey-btn_mode1"] button em,
-        div[data-testid="stKey-btn_mode2"] button em {
-            font-size: 1.0rem !important;
-        }
-
-        div[data-testid="stKey-btn_mode1"] button p,
-        div[data-testid="stKey-btn_mode2"] button p {
-            font-size: 0.88rem !important;
-        }
-    }
-
-    [data-testid="stFileUploader"] {
-        background-color: #FFFFFF;
-        border-radius: 12px;
-        padding: 0.6rem;
-    }
-
-    .katex-display {
-        background-color: #F1F5F9;
-        padding: 0.5rem;
-        border-radius: 8px;
-        color: #000000 !important;
-    }
+    .katex-display { background-color: #F1F5F9; padding: 0.5rem; border-radius: 8px; }
     </style>
     """,
         unsafe_allow_html=True,
     )
-
-
 inject_custom_css()
 
 
