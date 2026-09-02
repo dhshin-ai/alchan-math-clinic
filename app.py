@@ -349,27 +349,55 @@ def is_safe_matplotlib_code(code_str):
     return True
 
 
+import streamlit.components.v1 as components
+
+
+def render_jsxgraph(js_code):
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/jsxgraph/distrib/jsxgraph.css" />
+        <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/jsxgraph/distrib/jsxgraphcore.js"></script>
+        <style>
+            body {{ margin: 0; padding: 0; background-color: #f8fafc; }}
+            #jxgbox {{ width: 100%; max-width: 360px; height: 300px; margin: 10px auto; border-radius: 12px; border: 2px solid #3A449A; background-color: #ffffff; }}
+        </style>
+    </head>
+    <body>
+        <div id="jxgbox" class="jxgbox"></div>
+        <script type="text/javascript">
+            var board = JXG.JSXGraph.initBoard('jxgbox', {{
+                boundingbox: [-7, 7, 7, -7],
+                axis: true,
+                showCopyright: false,
+                showNavigation: false,
+                keepaspectratio: true
+            }});
+            try {{
+                {js_code}
+            }} catch(e) {{
+                console.log(e);
+            }}
+        </script>
+    </body>
+    </html>
+    """
+    components.html(html_content, height=325)
+
+
 def render_assistant_content(content):
-    pattern = r"```python\s*(.*?)\s*```"
-    parts = re.split(pattern, content, flags=re.DOTALL)
+    # JS 코드 블록(```javascript 또는 ```js) 감지 및 JSXGraph 렌더링
+    pattern = r"```(?:javascript|js)\s*(.*?)\s*```"
+    parts = re.split(pattern, content, flags=re.DOTALL | re.IGNORECASE)
 
     for i, part in enumerate(parts):
         if i % 2 == 0:
             if part.strip():
                 st.markdown(part)
         else:
-            code = part.strip()
-            if ("plt." in code or "fig" in code) and is_safe_matplotlib_code(code):
-                try:
-                    plt.close("all")
-                    local_scope = {"plt": plt, "np": np, "patches": patches}
-                    exec(code, {"__builtins__": {}}, local_scope)
-                    fig = local_scope.get("fig", plt.gcf())
-                    if fig and len(fig.axes) > 0:
-                        st.pyplot(fig)
-                        plt.close("all")
-                except Exception:
-                    pass
+            js_code = part.strip()
+            render_jsxgraph(js_code)
 
 
 def load_system_prompt(student_grade):
@@ -385,18 +413,25 @@ def load_system_prompt(student_grade):
         "말투는 학생에게 친근하고 다정한 반말('~해보자', '~했니?', '~란다')을 100% 사용해라.\n"
         "★ [이름 반복 언급 금지 경고]: 자기 자신을 3인칭('다혜 쌤은')으로 부르거나 이름을 반복하지 말고, 즉시 본론으로 들어가라.\n\n"
         f"★ [현재 학생 선택 과목: {student_grade}]\n"
-        "★ [필수 2단계 정교한 문제 분석 프로세스]:\n"
-        f"1. **1단계 (4단계 세부 유형 선 판별):** 전달받은 문제를 보자마자 시중 표준 분류 체계에 맞춰 4단계로 세부 출제 유형을 명시해라. (예: `📌 [출제 유형: {student_grade} > 대단원명 > 중단원명 > 세부 대표유형명]`)\n"
-        "2. **2단계 (교과범위 내 힌트 제공):** 오직 해당 세부 유형에서 다루는 표준 개념과 공식만 사용하여 학생에게 질문이나 힌트를 던져라.\n\n"
+        "★ [📐 JSXGraph(JS) 수학 전용 기하 시각화 필수 규칙]:\n"
+        "- 도형, 원의 방정식, 접선, 삼각비, 함수 문제가 나오면 답변 중간에 무조건 ```javascript ... ``` 코드 블록을 작성하여 JSXGraph 도형을 띄워라!\n"
+        "- JS 문법 예시 (원의 중심, 원, 외부 점, 접선, 보조선):\n"
+        "  `var C = board.create('point', [1, -2], {name:'(1,-2)', fixed:true});`\n"
+        "  `var circle = board.create('circle', [C, 3]);`\n"
+        "  `var P = board.create('point', [2, 4], {name:'P(2,4)', fixed:true});`\n"
+        "  `var t1 = board.create('tangent', [circle, P], {strokeColor:'red'});`\n"
+        "- 직선, 접선, 보조선, 직각 표시는 JSXGraph 고유 명령어를 써서 정밀하게 그려라.\n\n"
+        "★ [🚨 교과과정 표준 해법(교과서 정석 풀이) 100% 준수 수칙]:\n"
+        "1. **교과서 표준 알고리즘 사용:** 대학 수학, 상위 학년 개념(미분, 벡터, 로피탈 등)이나 편법 숏컷을 절대 쓰지 마라.\n"
+        "2. **순수 단원 성질 활용:** 순수 기하/도형 문제는 좌표평면에 억지로 옮겨 방정식으로 풀지 말고, 해당 단원 교과서에 나오는 도형 성질(원주각, 접현각, 피타고라스 등)만 써서 질문해라.\n"
+        f"3. **1단계 (4단계 세부 유형 선 판별):** 문제를 보자마자 세부 출제 유형을 명시해라. (예: `📌 [출제 유형: {student_grade} > 대단원명 > 중단원명 > 세부 대표유형명]`)\n"
+        "4. **2단계 (교과범위 내 힌트 제공):** 오직 해당 세부 유형 교과서 범위 공식만 사용하여 질문해라.\n\n"
         "★ [📷 이미지 OCR & 기하 도형 오류 방어 수칙]:\n"
-        "- 사진이 들어오면 문제가 보여주는 점(A, B, C..), 각도 수치, 조건 키워드부터 신중하게 확인해라.\n"
-        "- 도형 그림이 포함된 경우 힌트를 주기 전, 첫 줄에서 너가 인식한 점과 각도 조건(예: '그림에서 점 A, B, C와 각도 150도가 주어진 문제가 맞니?')을 가볍게 언급하여 인식 결과를 검증해라.\n"
-        "- 눈에 안 보이는 보조선을 지어내서 섣불리 각도를 계산하지 말고, '접선/공통현' 성질을 상기시키며 보조선 질문을 건네라.\n\n"
-        "★ [✍️ 연습장 오답 검토 모드 전용 가드레일]:\n"
-        "- 학생의 손글씨 풀이 사진이 들어오면 첫 줄부터 줄 단위로 부호 실수(+- 바뀜), 통분, 이항 실수를 콕 짚어 다정하게 설명해라.\n\n"
-        "3. 학생이 답을 요구하더라도 절대 전체 풀이나 최종 정답을 직접 내주지 마라.\n"
-        "4. 모든 수식은 예외 없이 100% LaTeX 표기법(`$ ... $` 또는 `$$ ... $$`)을 사용해라.\n"
-        "5. 원의 방정식, 이차함수, 도형 문제 시 matplotlib 시각화 코드를 함께 출력해라."
+        "- 사진이 들어오면 점(A, B, C..), 각도 수치, 조건 키워드부터 신중하게 확인해라.\n"
+        "- 도형 그림이 포함된 경우 첫 줄에서 너가 인식한 점과 각도 조건을 가볍게 언급하여 인식 결과를 검증해라.\n"
+        "- 안 보이는 보조선을 지어내지 말고, '접선/공통현' 성질을 상기시키며 보조선 질문을 건네라.\n\n"
+        "5. 학생이 답을 요구하더라도 절대 전체 풀이나 최종 정답을 직접 내주지 마라.\n"
+        "6. 모든 수식은 예외 없이 100% LaTeX 표기법(`$ ... $` 또는 `$$ ... $$`)을 사용해라."
         f"{custom_notes}"
     )
     return default_prompt
