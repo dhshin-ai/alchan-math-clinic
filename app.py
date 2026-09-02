@@ -27,24 +27,54 @@ except Exception:
     MASTER_PW = "1234"
 
 
-def log_to_slack_and_gsheet(student_name, mode, student_text, ai_reply):
-    slack_url = st.secrets.get("SLACK_WEBHOOK_URL", "")
+def log_to_slack_and_gsheet(student_name, student_grade, mode, student_text, ai_reply):
+    slack_webhook_url = st.secrets.get("SLACK_WEBHOOK_URL", "")
+    slack_bot_token = st.secrets.get("SLACK_BOT_TOKEN", "")
+    slack_channel_id = st.secrets.get("SLACK_CHANNEL_ID", "")
     gsheet_url = st.secrets.get("GSHEET_WEBHOOK_URL", "")
 
     kst = timezone(timedelta(hours=9))
     now_str = datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S")
 
-    if slack_url:
+    thread_ts = st.session_state.get("slack_thread_ts", None)
+
+    if slack_bot_token and slack_channel_id:
         try:
-            slack_payload = {
-                "text": f"🔔 *[알찬학원 수학 클리닉] 새로운 질문 접수*\n"
-                        f"• *학생 이름*: {student_name}\n"
+            headers = {
+                "Authorization": f"Bearer {slack_bot_token}",
+                "Content-Type": "application/json; charset=utf-8"
+            }
+            payload = {
+                "channel": slack_channel_id,
+                "text": f"🔔 *[알찬학원 수학 클리닉] 질문 접수*\n"
+                        f"• *학생*: {student_name} ({student_grade})\n"
                         f"• *시각*: {now_str}\n"
                         f"• *모드*: {mode}\n"
-                        f"• *학생 입력*: {student_text if student_text else '(사진 업로드)'}\n\n"
-                        f"🤖 *다혜 쌤 피드백/질문*:\n{ai_reply[:300]}..."
+                        f"• *입력*: {student_text if student_text else '(사진 업로드)'}\n\n"
+                        f"🤖 *답변 요약*:\n{ai_reply[:300]}..."
             }
-            requests.post(slack_url, json=slack_payload, timeout=3)
+            if thread_ts:
+                payload["thread_ts"] = thread_ts
+
+            res = requests.post("https://slack.com/api/chat.postMessage", headers=headers, json=payload, timeout=3)
+            res_json = res.json()
+            if res_json.get("ok") and not thread_ts:
+                st.session_state.slack_thread_ts = res_json.get("ts")
+        except Exception:
+            pass
+    elif slack_webhook_url:
+        try:
+            slack_payload = {
+                "text": f"🔔 *[알찬학원 수학 클리닉] 질문 접수*\n"
+                        f"• *학생*: {student_name} ({student_grade})\n"
+                        f"• *시각*: {now_str}\n"
+                        f"• *모드*: {mode}\n"
+                        f"• *입력*: {student_text if student_text else '(사진 업로드)'}\n\n"
+                        f"🤖 *답변 요약*:\n{ai_reply[:300]}..."
+            }
+            if thread_ts:
+                slack_payload["thread_ts"] = thread_ts
+            requests.post(slack_webhook_url, json=slack_payload, timeout=3)
         except Exception:
             pass
 
@@ -52,7 +82,7 @@ def log_to_slack_and_gsheet(student_name, mode, student_text, ai_reply):
         try:
             gsheet_payload = {
                 "timestamp": now_str,
-                "student_name": student_name,
+                "student_name": f"{student_name} ({student_grade})",
                 "mode": mode,
                 "prompt": student_text if student_text else "(사진 최초 제출)",
                 "response": ai_reply
@@ -135,7 +165,6 @@ def inject_custom_css():
         color: #000000 !important;
     }
 
-    /* 대형 카드 버튼 스타일 정의 */
     div[data-testid="stKey-btn_mode1"] button,
     div[data-testid="stKey-btn_mode2"] button {
         width: 100% !important;
@@ -149,7 +178,6 @@ def inject_custom_css():
         transition: all 0.25s ease-in-out !important;
     }
 
-    /* 버튼 내부 모든 요소 강제 줄바꿈 및 pre-wrap 설정 */
     div[data-testid="stKey-btn_mode1"] button *,
     div[data-testid="stKey-btn_mode2"] button * {
         white-space: pre-wrap !important;
@@ -165,7 +193,6 @@ def inject_custom_css():
         color: #475569 !important;
     }
 
-    /* 1. 제목 (**볼드**): 크고 굵은 남색 글씨 */
     div[data-testid="stKey-btn_mode1"] button strong,
     div[data-testid="stKey-btn_mode2"] button strong {
         font-size: 1.45rem !important;
@@ -176,7 +203,6 @@ def inject_custom_css():
         line-height: 1.3 !important;
     }
 
-    /* 2. 부제목 (*기울임*): 중형 폰트 민트색 (기울임 해제) */
     div[data-testid="stKey-btn_mode1"] button em,
     div[data-testid="stKey-btn_mode2"] button em {
         font-size: 1.05rem !important;
@@ -196,7 +222,6 @@ def inject_custom_css():
         transform: translateY(-3px) !important;
     }
 
-    /* 모바일 화면 (768px 이하) 반응형 크기 조절 */
     @media (max-width: 768px) {
         div[data-testid="stKey-btn_mode1"] button,
         div[data-testid="stKey-btn_mode2"] button {
@@ -323,34 +348,51 @@ def render_assistant_content(content):
                     pass
 
 
-def load_system_prompt():
-    default_prompt = (
-        "너는 친절하고 실력 있는 알찬학원 수학 강사 신다혜 선생님이다.\n\n"
-        "[강력 수식 & 시각화 그림 규칙 - 필수 준수]\n"
-        "1. 모든 수학 공식, 수식, 변수(x, y, a, b 등), 숫자 식, 방정식, 기호는 예외 없이 100% LaTeX 표기법(`$ ... $` 또는 `$$ ... $$`)으로 작성해라.\n"
-        "2. 분수를 작성할 때 가로 형태(1/2, a/b)는 절대 사용하지 말고, 반드시 문제집처럼 세로 분수 형태인 `\\dfrac{a}{b}`를 사용해라.\n"
-        "3. 원의 방정식, 이차함수, 도형, 기하, 그래프 문제가 나오면 반드시 예외 없이 무조건 matplotlib 시각화 코드 블록(```python ... ```)을 작성해라."
-    )
+def load_system_prompt(student_grade):
+    custom_notes = ""
     try:
-        with open("system_prompt.txt", "r", encoding="utf-8") as f:
-            return f.read()
+        with open("custom_notes.txt", "r", encoding="utf-8") as f:
+            custom_notes = "\n\n[선생님 전용 개념 및 노하우 데이터베이스]:\n" + f.read()
     except FileNotFoundError:
-        return default_prompt
+        pass
+
+    default_prompt = (
+        "너는 친절하고 실력 있는 알찬학원 수학 선생님이다.\n"
+        "말투는 학생에게 친근하고 다정한 반말('~해보자', '~했니?', '~란다')을 100% 사용해라.\n"
+        "★ [이름 반복 언급 금지 경고]: 답변할 때 자기 자신을 3인칭('다혜 쌤은', '다혜 쌤이')으로 부르거나 자기 이름을 지겹게 반복해서 언급하지 마라. 인공지능 티를 내지 말고 바로 수학적인 설명과 힌트 질문에 집중해라.\n\n"
+        f"[현재 학생 학년 및 과정: {student_grade}]\n"
+        "1. 절대로 현재 선택된 교육과정을 넘어서는 상위 개념(예: 고1 수학인데 미분/적분 사용 금지)을 쓰지 말고, 해당 학년 수준에 맞는 공식과 개념으로만 풀어라.\n"
+        "2. 학생이 '바빠요', '급해요', '시간 없으니 답만 주세요'라고 떼쓰거나 요구하더라도 절대로 답이나 전체 풀이를 바로 주지 마라. 반드시 단계별 힌트 질문만 제공해라.\n"
+        "3. 수학과 관련 없는 질문(일상 대화, 영어, 점심 메뉴 등)은 '지금은 수학 공부하는 시간이야! 수학 질문 가져와~' 하고 유연하게 수학으로 돌려라.\n"
+        "4. 모든 수학 공식, 수식, 변수(x, y, a, b 등), 식, 기호는 예외 없이 100% LaTeX 표기법(`$ ... $` 또는 `$$ ... $$`)으로 작성해라.\n"
+        "5. 분수를 작성할 때 가로 형태(1/2, a/b)는 절대 사용하지 말고, 반드시 세로 분수 형태인 `\\dfrac{a}{b}`를 사용해라.\n"
+        "6. 원의 방정식, 이차함수, 도형, 기하, 그래프 문제가 나오면 반드시 예외 없이 무조건 matplotlib 시각화 코드 블록(```python ... ```)을 작성해라."
+        f"{custom_notes}"
+    )
+    return default_prompt
 
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 if "student_name" not in st.session_state:
     st.session_state.student_name = ""
+if "student_grade" not in st.session_state:
+    st.session_state.student_grade = "고1 수학 (공통수학)"
+if "slack_thread_ts" not in st.session_state:
+    st.session_state.slack_thread_ts = None
 
 st.title("✏️ 알찬학원 신다혜 쌤의 1:1 수학 클리닉")
 
 if not st.session_state.authenticated:
     st.markdown("---")
     st.subheader("🔒 수강생 입장하기")
-    st.caption("학생 본인의 이름과 선생님이 안내한 비밀번호를 입력해 주세요.")
+    st.caption("학생 본인의 이름과 학년, 선생님이 안내한 비밀번호를 입력해 주세요.")
 
     input_name = st.text_input("학생 이름 (예: 김철수):")
+    input_grade = st.selectbox(
+        "학년 / 과정 선택:",
+        ["고1 수학 (공통수학)", "중등 수학", "수학Ⅰ·Ⅱ", "미적분·확통·기하"]
+    )
     input_pw = st.text_input("비밀번호:", type="password")
 
     if st.button("🔓 클리닉 입장하기", use_container_width=True):
@@ -360,10 +402,11 @@ if not st.session_state.authenticated:
         elif input_pw == MASTER_PW or input_pw == "1234":
             st.session_state.authenticated = True
             st.session_state.student_name = clean_name
-            st.success(f"{clean_name} 학생, 환영합니다! 공부를 시작해 볼까요?")
+            st.session_state.student_grade = input_grade
+            st.success(f"{clean_name} 학생 ({input_grade}), 환영해! 공부를 시작해 볼까?")
             st.rerun()
         else:
-            st.error("비밀번호가 올바르지 않습니다. 다혜 쌤에게 문의해 주세요!")
+            st.error("비밀번호가 올바르지 않습니다. 선생님에게 문의해 주세요!")
     st.stop()
 
 if "messages" not in st.session_state:
@@ -373,16 +416,16 @@ if "selected_mode" not in st.session_state:
 if "last_upload_key" not in st.session_state:
     st.session_state.last_upload_key = None
 
-system_prompt = load_system_prompt()
+system_prompt = load_system_prompt(st.session_state.student_grade)
 
-st.caption(f"👤 현재 접속 학생: **{st.session_state.student_name}**")
+st.caption(f"👤 현재 접속 학생: **{st.session_state.student_name}** | 🎓 학년: **{st.session_state.student_grade}**")
 
 if st.session_state.selected_mode is None:
     st.markdown(
         """
     <div class="guide-box">
         <div class="guide-title">💡 클리닉 이용 안내</div>
-        <div class="guide-item">❓ <b>풀이가 막혔어요:</b> 문제 사진 1장을 올리면, 정답 대신 스스로 답을 찾아갈 수 있게 다혜 쌤이 질문을 던져줍니다.</div>
+        <div class="guide-item">❓ <b>풀이가 막혔어요:</b> 문제 사진 1장을 올리면, 정답 대신 스스로 답을 찾아갈 수 있게 질문을 던져줍니다.</div>
         <div class="guide-item">✍️ <b>내 풀이 검토:</b> 사진 1장(문제+풀이 함께 기록) 또는 사진 2장을 올리면 잘한 부분과 실수한 오답 지점을 콕 짚어줍니다.</div>
         <div class="guide-item">📐 <b>수식 & 도형/원 그림:</b> 모든 수식은 세로 분수($\dfrac{a}{b}$), 원의 방정식 및 도형 문제 시 직관적인 그림 자동 생성!</div>
     </div>
@@ -401,10 +444,11 @@ if st.session_state.selected_mode is None:
             "*(스스로 풀어보기)*\n\n"
             "📷 문제 사진 1장 필요\n\n"
             "정답 대신 스스로 답을 찾아갈 수 있게\n\n"
-            "다혜 쌤이 차근차근 질문을 던져줄게요!"
+            "차근차근 질문을 던져줄게요!"
         )
         if st.button(btn1_text, key="btn_mode1", use_container_width=True):
             st.session_state.selected_mode = "❓ 스스로 풀어보기 (차근차근 질문)"
+            st.session_state.slack_thread_ts = None
             st.rerun()
 
     with col2:
@@ -417,6 +461,7 @@ if st.session_state.selected_mode is None:
         )
         if st.button(btn2_text, key="btn_mode2", use_container_width=True):
             st.session_state.selected_mode = "✍️ 내 풀이 검토 (문제 + 연습장)"
+            st.session_state.slack_thread_ts = None
             st.rerun()
 
     st.stop()
@@ -431,6 +476,7 @@ with top_col2:
         st.session_state.selected_mode = None
         st.session_state.messages = []
         st.session_state.last_upload_key = None
+        st.session_state.slack_thread_ts = None
         st.rerun()
 
 st.markdown("---")
@@ -481,11 +527,11 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
             },
             {
                 "type": "text",
-                "text": "[모드: 스스로 풀어보기] 학생이 풀다가 막혀서 문제 사진을 올렸어. 정답이나 전체 풀이를 바로 주지 말고, 스스로 고민해서 답을 찾을 수 있게 첫 번째 개념 질문만 건네줘. (특히 원의 방정식, 이차함수, 도형의 방정식, 기하, 그래프 문제는 100% 무조건 좌표평면에 원, 중심점, 반지름, 접선, 그래프 등을 보일 수 있는 ```python 코드 블록으로 matplotlib 그림 코드를 작성해라)",
+                "text": f"[모드: 스스로 풀어보기 / 학년: {st.session_state.student_grade}] 학생이 풀다가 막혀서 문제 사진을 올렸어. 다정한 반말로 첫 번째 개념 질문만 건네줘. 절대 상위 학년 개념을 쓰지 말고, 답이나 전체 풀이를 다 주지 마. 자기 이름을 3인칭으로 부르며 반복하지 마라.",
             },
         ]
 
-        with st.spinner("다혜 쌤이 문제를 꼼꼼하게 살피는 중입니다..."):
+        with st.spinner("문제를 꼼꼼하게 살피는 중입니다..."):
             try:
                 response = client.messages.create(
                     model=MODEL_NAME,
@@ -497,7 +543,7 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
-                log_to_slack_and_gsheet(st.session_state.student_name, mode, "문제 사진 업로드 제출", bot_reply)
+                log_to_slack_and_gsheet(st.session_state.student_name, st.session_state.student_grade, mode, "문제 사진 업로드 제출", bot_reply)
                 st.rerun()
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
@@ -535,13 +581,13 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                     },
                 }
             )
-            prompt_guide = "[모드: 내 풀이 검토] 문제 사진과 연습장 풀이 사진 2장이 전달되었어. 연습장 풀이를 대조해서 잘 접근한 부분과 실수한 오답 지점을 지적해줘. (특히 원의 방정식, 이차함수, 도형의 방정식, 기하, 그래프 문제는 100% 무조건 좌표평면에 원, 중심점, 반지름, 접선, 그래프 등을 보일 수 있는 ```python 코드 블록으로 matplotlib 그림 코드를 작성해라)"
+            prompt_guide = f"[모드: 내 풀이 검토 / 학년: {st.session_state.student_grade}] 문제 사진과 연습장 풀이 사진 2장이 전달되었어. 다정한 반말로 잘한 부분과 실수한 오답 지점을 짚어줘. 절대 상위 학년 개념을 쓰지 마. 자기 이름을 3인칭으로 부르며 반복하지 마라."
         else:
-            prompt_guide = "[모드: 내 풀이 검토] 이 사진 한 장 안에 문제와 학생이 직접 적은 풀이가 함께 들어있어. 인쇄된 문제와 학생의 손글씨 풀이를 함께 확인하여 잘 접근한 부분과 실수한 오답 지점을 콕 짚어줘. (특히 원의 방정식, 이차함수, 도형의 방정식, 기하, 그래프 문제는 100% 무조건 좌표평면에 원, 중심점, 반지름, 접선, 그래프 등을 보일 수 있는 ```python 코드 블록으로 matplotlib 그림 코드를 작성해라)"
+            prompt_guide = f"[모드: 내 풀이 검토 / 학년: {st.session_state.student_grade}] 이 사진 한 장 안에 문제와 학생이 직접 적은 풀이가 함께 들어있어. 다정한 반말로 잘한 부분과 실수한 오답 지점을 콕 짚어줘. 절대 상위 학년 개념을 쓰지 마. 자기 이름을 3인칭으로 부르며 반복하지 마라."
 
         content_blocks.append({"type": "text", "text": prompt_guide})
 
-        with st.spinner("다혜 쌤이 문제와 풀이를 대조 분석하는 중입니다..."):
+        with st.spinner("문제와 풀이를 대조 분석하는 중입니다..."):
             try:
                 response = client.messages.create(
                     model=MODEL_NAME,
@@ -553,7 +599,7 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
-                log_to_slack_and_gsheet(st.session_state.student_name, mode, "풀이 검토 사진 제출", bot_reply)
+                log_to_slack_and_gsheet(st.session_state.student_name, st.session_state.student_grade, mode, "풀이 검토 사진 제출", bot_reply)
                 st.rerun()
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
@@ -565,7 +611,7 @@ for msg in st.session_state.messages:
         else:
             st.markdown(msg["content"])
 
-if prompt := st.chat_input("다혜 쌤에게 답장하기 (예: 정답은 \\dfrac{1}{2} 같아요!)"):
+if prompt := st.chat_input("답장하기 (예: 정답은 \\dfrac{1}{2} 같아!)"):
     if not api_key:
         st.error("API 키가 설정되지 않았습니다.")
         st.stop()
@@ -638,6 +684,6 @@ if prompt := st.chat_input("다혜 쌤에게 답장하기 (예: 정답은 \\dfra
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
-                log_to_slack_and_gsheet(st.session_state.student_name, mode, prompt, bot_reply)
+                log_to_slack_and_gsheet(st.session_state.student_name, st.session_state.student_grade, mode, prompt, bot_reply)
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
