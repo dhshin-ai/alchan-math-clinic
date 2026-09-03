@@ -804,6 +804,10 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if msg["role"] == "assistant":
             render_assistant_content(msg["content"])
+        elif msg.get("image_bytes"):
+            st.image(msg["image_bytes"], caption="✍️ 연습장 필기 답변", width=320)
+            if msg["content"]:
+                st.caption(msg["content"])
         else:
             st.markdown(msg["content"])
 
@@ -823,62 +827,112 @@ with sos_col2:
         )
         st.success("🚨 다혜 쌤에게 실시간 SOS가 전달되었습니다! 잠시만 기다려주세요.")
 
-if prompt := st.chat_input("답장하기 (예: ∠DBC = 150도이고, 정답은 \\dfrac{1}{2} 같아!)"):
+# ==========================================
+# 💬 하단 대화 입력 구역 (키보드 또는 연습장 필기)
+# ==========================================
+st.markdown("---")
+st.write("💬 **답변 제출하기** (키보드로 치거나 아래 연습장에 펜으로 적어보세요!)")
+
+reply_tab_text, reply_tab_canvas = st.tabs(["⌨️ 키보드 텍스트 답장", "✍️ 연습장 필기 답장 (S펜/애플펜슬)"])
+
+user_reply_content = None
+
+with reply_tab_text:
+    text_reply = st.chat_input("다혜 쌤 질문에 대한 답을 입력하세요...")
+    if text_reply:
+        user_reply_content = text_reply
+
+with reply_tab_canvas:
+    if st_canvas is not None:
+        st.caption("✍️ 아래 하얀 연습장에 펜으로 계산 과정이나 답을 자유롭게 적은 뒤 제출하세요!")
+        canvas_key = f"reply_canvas_{len(st.session_state.messages)}"
+        canvas_reply = st_canvas(
+            fill_color="rgba(0, 0, 0, 0)",
+            stroke_width=2,
+            stroke_color="#000000",
+            background_color="#FFFFFF",
+            height=280,
+            width=680,
+            drawing_mode="freedraw",
+            key=canvas_key,
+        )
+        if st.button("🚀 필기로 답장 보내기", use_container_width=True, type="primary"):
+            if canvas_reply is not None and canvas_reply.image_data is not None:
+                img = Image.fromarray(canvas_reply.image_data.astype("uint8"), "RGBA")
+                bg = Image.new("RGB", img.size, (255, 255, 255))
+                bg.paste(img, mask=img.split()[3])
+                buf = io.BytesIO()
+                bg.save(buf, format="JPEG")
+                user_reply_content = {"type": "handwriting", "bytes": buf.getvalue()}
+    else:
+        st.info("💡 칠판 라이브러리가 로딩 중이거나 텍스트 답장 모드를 이용해 주세요.")
+
+if user_reply_content:
+    if isinstance(user_reply_content, str):
+        st.session_state.messages.append({"role": "user", "content": user_reply_content})
+    else:
+        st.session_state.messages.append({
+            "role": "user",
+            "content": "(학생이 연습장에 손글씨로 적은 답변입니다)",
+            "image_bytes": user_reply_content["bytes"],
+        })
+    st.rerun()
+
+# ==========================================
+# 🤖 마지막 메시지가 학생 답변이면 다혜 쌤 AI 응답 생성
+# ==========================================
+if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
     if not api_key:
         st.error("API 키가 설정되지 않았습니다.")
         st.stop()
 
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
     client = anthropic.Anthropic(api_key=api_key)
     api_messages = []
 
-    for idx, msg in enumerate(st.session_state.messages):
-        if idx == 0:
-            if mode == "❓ 스스로 풀어보기 (차근차근 질문)" and uploaded_problem:
-                uploaded_problem.seek(0)
-                content_blocks = [
+    # 최초 문제/풀이 이미지를 첫 user 턴으로 복원
+    first_blocks = []
+    if uploaded_problem is not None:
+        uploaded_problem.seek(0)
+        first_blocks.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": uploaded_problem.type,
+                "data": base64.b64encode(uploaded_problem.read()).decode("utf-8"),
+            },
+        })
+    if mode == "✍️ 내 풀이 검토 (문제 + 연습장)" and uploaded_solution is not None:
+        uploaded_solution.seek(0)
+        first_blocks.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": uploaded_solution.type,
+                "data": base64.b64encode(uploaded_solution.read()).decode("utf-8"),
+            },
+        })
+    first_blocks.append({
+        "type": "text",
+        "text": f"[과목: {st.session_state.student_grade} / 모드: {mode}] 위 문제 사진(및 풀이)을 보고 규칙에 따라 지도해줘.",
+    })
+    api_messages.append({"role": "user", "content": first_blocks})
+
+    for msg in st.session_state.messages:
+        if msg.get("image_bytes"):
+            api_messages.append({
+                "role": "user",
+                "content": [
                     {
                         "type": "image",
                         "source": {
                             "type": "base64",
-                            "media_type": uploaded_problem.type,
-                            "data": base64.b64encode(uploaded_problem.read()).decode("utf-8"),
+                            "media_type": "image/jpeg",
+                            "data": base64.b64encode(msg["image_bytes"]).decode("utf-8"),
                         },
                     },
                     {"type": "text", "text": msg["content"]},
-                ]
-                api_messages.append({"role": "user", "content": content_blocks})
-            elif mode == "✍️ 내 풀이 검토 (문제 + 연습장)" and uploaded_problem:
-                uploaded_problem.seek(0)
-                content_blocks = [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": uploaded_problem.type,
-                            "data": base64.b64encode(uploaded_problem.read()).decode("utf-8"),
-                        },
-                    }
-                ]
-                if uploaded_solution:
-                    uploaded_solution.seek(0)
-                    content_blocks.append(
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": uploaded_solution.type,
-                                "data": base64.b64encode(uploaded_solution.read()).decode("utf-8"),
-                            },
-                        }
-                    )
-                content_blocks.append({"type": "text", "text": msg["content"]})
-                api_messages.append({"role": "user", "content": content_blocks})
-            else:
-                api_messages.append({"role": msg["role"], "content": msg["content"]})
+                ],
+            })
         else:
             api_messages.append({"role": msg["role"], "content": msg["content"]})
 
@@ -893,9 +947,12 @@ if prompt := st.chat_input("답장하기 (예: ∠DBC = 150도이고, 정답은 
                 )
                 bot_reply = get_response_text(response)
                 render_assistant_content(bot_reply)
-                st.session_state.messages.append(
-                    {"role": "assistant", "content": bot_reply}
+                st.session_state.messages.append({"role": "assistant", "content": bot_reply})
+                last_student_text = st.session_state.messages[-2]["content"]
+                log_to_slack_and_gsheet(
+                    st.session_state.student_name, st.session_state.student_grade, mode,
+                    last_student_text, bot_reply,
                 )
-                log_to_slack_and_gsheet(st.session_state.student_name, st.session_state.student_grade, mode, prompt, bot_reply)
+                st.rerun()
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
