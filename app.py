@@ -1,6 +1,8 @@
 import base64
+import io
 import re
 import ast
+import uuid
 import requests
 from datetime import datetime, timezone, timedelta
 import anthropic
@@ -8,11 +10,32 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
+from PIL import Image
 
 try:
     from youtube_transcript_api import YouTubeTranscriptApi
 except ImportError:
     YouTubeTranscriptApi = None
+
+try:
+    from streamlit_drawable_canvas import st_canvas
+except ImportError:
+    st_canvas = None
+
+
+class CanvasFile:
+    """st.file_uploader가 반환하는 객체처럼 동작하는 칠판 필기 이미지 래퍼."""
+
+    def __init__(self, b_data, f_id):
+        self.b_data = b_data
+        self.type = "image/jpeg"
+        self.file_id = f_id
+
+    def read(self):
+        return self.b_data
+
+    def seek(self, offset):
+        pass
 
 st.set_page_config(
     page_title="알찬학원 신다혜 쌤의 1:1 수학 클리닉",
@@ -604,25 +627,67 @@ with top_col2:
 
 st.markdown("---")
 
+if "saved_canvas_bytes" not in st.session_state:
+    st.session_state.saved_canvas_bytes = None
+if "canvas_file_id" not in st.session_state:
+    st.session_state.canvas_file_id = None
+
 uploaded_problem = None
 uploaded_solution = None
 
-if mode == "❓ 스스로 풀어보기 (차근차근 질문)":
-    st.caption("📷 **문제 사진 1장**을 업로드해 주세요. (도형의 점/각도가 복잡하면 답장창에 글자로 한번 더 적어주면 정확도 100%!)")
-    uploaded_problem = st.file_uploader(
-        "문제 사진 첨부", type=["jpg", "jpeg", "png"], key="prob_only"
-    )
-else:
-    st.caption("📷 **사진을 첨부해 주세요.** (연습장 풀이와 함께 올리면 오답 검토가 더욱 정밀해집니다)")
-    up_col1, up_col2 = st.columns(2)
-    with up_col1:
-        uploaded_problem = st.file_uploader(
-            "1️⃣ 문제 사진 (또는 문제+풀이 사진)", type=["jpg", "jpeg", "png"], key="prob_dual"
+st.markdown("### 📝 문제 및 풀이 입력")
+tab_img, tab_draw = st.tabs(["📷 사진 업로드", "✍️ 화면에 직접 필기 (태블릿/스마트폰)"])
+
+with tab_img:
+    if mode == "❓ 스스로 풀어보기 (차근차근 질문)":
+        st.caption("📷 **문제 사진 1장**을 업로드해 주세요. (도형의 점/각도가 복잡하면 답장창에 글자로 한번 더 적어주면 정확도 100%!)")
+        up_file = st.file_uploader("문제 사진 첨부", type=["jpg", "jpeg", "png"], key="prob_only")
+        if up_file:
+            uploaded_problem = up_file
+            st.session_state.saved_canvas_bytes = None
+    else:
+        st.caption("📷 **사진을 첨부해 주세요.** (연습장 풀이와 함께 올리면 오답 검토가 더욱 정밀해집니다)")
+        up_col1, up_col2 = st.columns(2)
+        with up_col1:
+            up_prob = st.file_uploader("1️⃣ 문제 사진 (또는 문제+풀이 사진)", type=["jpg", "jpeg", "png"], key="prob_dual")
+            if up_prob:
+                uploaded_problem = up_prob
+                st.session_state.saved_canvas_bytes = None
+        with up_col2:
+            up_sol = st.file_uploader("2️⃣ 연습장 풀이 사진 (선택 사항)", type=["jpg", "jpeg", "png"], key="sol_dual")
+            if up_sol:
+                uploaded_solution = up_sol
+
+with tab_draw:
+    if st_canvas is None:
+        st.warning("칠판 기능 라이브러리(streamlit-drawable-canvas)가 아직 설치되지 않았습니다.")
+    else:
+        st.caption("✍️ S펜, 애플펜슬, 터치, 또는 마우스로 아래 칠판에 문제나 풀이를 직접 적어주세요!")
+        canvas_result = st_canvas(
+            fill_color="rgba(0, 0, 0, 0)",
+            stroke_width=2,
+            stroke_color="#000000",
+            background_color="#FFFFFF",
+            height=380,
+            width=680,
+            drawing_mode="freedraw",
+            key="math_canvas",
         )
-    with up_col2:
-        uploaded_solution = st.file_uploader(
-            "2️⃣ 연습장 풀이 사진 (선택 사항)", type=["jpg", "jpeg", "png"], key="sol_dual"
-        )
+        if st.button("🚀 다 썼어요! 다혜 쌤 AI에게 제출하기", use_container_width=True):
+            if canvas_result is not None and canvas_result.image_data is not None:
+                img = Image.fromarray(canvas_result.image_data.astype("uint8"), "RGBA")
+                bg = Image.new("RGB", img.size, (255, 255, 255))
+                bg.paste(img, mask=img.split()[3])
+                buf = io.BytesIO()
+                bg.save(buf, format="JPEG")
+
+                st.session_state.saved_canvas_bytes = buf.getvalue()
+                st.session_state.canvas_file_id = str(uuid.uuid4())
+                st.success("✅ 칠판 필기가 정상 제출되었습니다!")
+                st.rerun()
+
+if st.session_state.saved_canvas_bytes is not None and uploaded_problem is None:
+    uploaded_problem = CanvasFile(st.session_state.saved_canvas_bytes, st.session_state.canvas_file_id)
 
 prob_id = uploaded_problem.file_id if uploaded_problem else "none"
 sol_id = uploaded_solution.file_id if uploaded_solution else "none"
