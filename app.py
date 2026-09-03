@@ -307,6 +307,14 @@ def inject_custom_css():
         border-radius: 8px;
         color: #000000 !important;
     }
+
+    /* 캔버스(필기 칠판) 모바일 반응형 강제 적용 */
+    div[data-testid="stCanvas"] iframe, div[data-testid="stCanvas"] canvas,
+    [data-testid="stCustomComponentV1"] iframe,
+    .st-key-math_canvas iframe, .st-key-math_canvas canvas {
+        max-width: 100% !important;
+        height: auto !important;
+    }
     </style>
     """,
         unsafe_allow_html=True,
