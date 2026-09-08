@@ -833,6 +833,29 @@ with sos_col2:
         st.success("🚨 다혜 쌤에게 실시간 SOS가 전달되었습니다! 잠시만 기다려주세요.")
 
 # ==========================================
+# 🆘 학생 구출용 퀵 액션 버튼 (AI가 답변한 직후에만 노출)
+# ==========================================
+if len(st.session_state.messages) > 1 and st.session_state.messages[-1]["role"] == "assistant":
+    st.markdown("👇 **어떻게 풀어야 할지 막막하다면 버튼을 눌러주세요!**")
+
+    btn_col1, btn_col2, btn_col3 = st.columns(3)
+
+    with btn_col1:
+        if st.button("💡 다음 힌트만 살짝", use_container_width=True):
+            st.session_state.messages.append({"role": "user", "content": "다음 단계로 넘어가는 힌트만 살짝 알려줘."})
+            st.rerun()
+
+    with btn_col2:
+        if st.button("🔓 80% 풀이 바로 보기", use_container_width=True, type="primary"):
+            st.session_state.messages.append({"role": "user", "content": "진짜 모르겠어. 날 괴롭히지 말고 풀이의 80%를 시원하게 바로 보여줘!"})
+            st.rerun()
+
+    with btn_col3:
+        if st.button("📝 유사문제 연습하기", use_container_width=True):
+            st.session_state.messages.append({"role": "user", "content": "이 개념을 쓰는 비슷한 다른 문제로 연습해보고 싶어."})
+            st.rerun()
+
+# ==========================================
 # 💬 하단 대화 입력 구역 (키보드 또는 연습장 필기)
 # ==========================================
 st.markdown("---")
