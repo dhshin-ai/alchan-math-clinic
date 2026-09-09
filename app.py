@@ -1,8 +1,6 @@
 import base64
-import io
 import re
 import ast
-import uuid
 import requests
 from datetime import datetime, timezone, timedelta
 import anthropic
@@ -10,32 +8,11 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
-from PIL import Image
 
 try:
     from youtube_transcript_api import YouTubeTranscriptApi
 except ImportError:
     YouTubeTranscriptApi = None
-
-try:
-    from streamlit_drawable_canvas import st_canvas
-except ImportError:
-    st_canvas = None
-
-
-class CanvasFile:
-    """st.file_uploader가 반환하는 객체처럼 동작하는 칠판 필기 이미지 래퍼."""
-
-    def __init__(self, b_data, f_id):
-        self.b_data = b_data
-        self.type = "image/jpeg"
-        self.file_id = f_id
-
-    def read(self):
-        return self.b_data
-
-    def seek(self, offset):
-        pass
 
 st.set_page_config(
     page_title="알찬학원 신다혜 쌤의 1:1 수학 클리닉",
@@ -639,83 +616,28 @@ with top_col2:
 
 st.markdown("---")
 
-if "saved_canvas_bytes" not in st.session_state:
-    st.session_state.saved_canvas_bytes = None
-if "canvas_file_id" not in st.session_state:
-    st.session_state.canvas_file_id = None
-
-uploaded_problem = None
+# ==========================================
+# 📷 심플 문제 사진 업로드
+# ==========================================
 uploaded_solution = None
 
-st.markdown("### 📝 문제 및 풀이 입력")
-tab_img, tab_draw = st.tabs(["📷 사진 업로드", "✍️ 화면에 직접 필기 (태블릿/스마트폰)"])
-
-with tab_img:
-    if mode == "❓ 스스로 풀어보기 (차근차근 질문)":
-        st.caption("📷 **문제 사진 1장**을 업로드해 주세요. (도형의 점/각도가 복잡하면 답장창에 글자로 한번 더 적어주면 정확도 100%!)")
-        up_file = st.file_uploader("문제 사진 첨부", type=["jpg", "jpeg", "png"], key="prob_only")
-        if up_file:
-            uploaded_problem = up_file
-            st.session_state.saved_canvas_bytes = None
-    else:
-        st.caption("📷 **사진을 첨부해 주세요.** (연습장 풀이와 함께 올리면 오답 검토가 더욱 정밀해집니다)")
-        up_col1, up_col2 = st.columns(2)
-        with up_col1:
-            up_prob = st.file_uploader("1️⃣ 문제 사진 (또는 문제+풀이 사진)", type=["jpg", "jpeg", "png"], key="prob_dual")
-            if up_prob:
-                uploaded_problem = up_prob
-                st.session_state.saved_canvas_bytes = None
-        with up_col2:
-            up_sol = st.file_uploader("2️⃣ 연습장 풀이 사진 (선택 사항)", type=["jpg", "jpeg", "png"], key="sol_dual")
-            if up_sol:
-                uploaded_solution = up_sol
-
-with tab_draw:
-    if st_canvas is None:
-        st.warning("칠판 기능 라이브러리(streamlit-drawable-canvas)가 아직 설치되지 않았습니다.")
-    else:
-        st.caption("✍️ S펜, 애플펜슬, 터치, 또는 마우스로 아래 칠판에 문제나 풀이를 직접 적어주세요!")
-        canvas_result = st_canvas(
-            fill_color="rgba(0, 0, 0, 0)",
-            stroke_width=2,
-            stroke_color="#000000",
-            background_color="#FFFFFF",
-            height=380,
-            width=680,
-            drawing_mode="freedraw",
-            key="math_canvas",
+st.markdown("### 📝 문제 올리기")
+if mode == "✍️ 내 풀이 검토 (문제 + 연습장)":
+    up_c1, up_c2 = st.columns(2)
+    with up_c1:
+        uploaded_problem = st.file_uploader(
+            "1️⃣ 문제 사진 (또는 문제+풀이 사진)", type=["jpg", "jpeg", "png"], key="prob_clean"
         )
-        if st.button("🚀 다 썼어요! 다혜 쌤 AI에게 제출하기", use_container_width=True):
-            if canvas_result is not None:
-                # 1단계: 상단 칠판에 필기 자국(objects)이 실제로 있는지 검사
-                has_drawing = False
-                if getattr(canvas_result, "json_data", None) is not None:
-                    objects = canvas_result.json_data.get("objects", [])
-                    if len(objects) > 0:
-                        has_drawing = True
-
-                if not has_drawing:
-                    st.warning("⚠️ 칠판에 아무것도 적혀있지 않아요! 문제나 풀이를 펜으로 먼저 적어주세요.")
-                else:
-                    # 2단계: 안전하게 image_data 접근
-                    try:
-                        if canvas_result.image_data is not None:
-                            img = Image.fromarray(canvas_result.image_data.astype("uint8"), "RGBA")
-                            bg = Image.new("RGB", img.size, (255, 255, 255))
-                            bg.paste(img, mask=img.split()[3])
-                            buf = io.BytesIO()
-                            bg.save(buf, format="JPEG")
-
-                            st.session_state.saved_canvas_bytes = buf.getvalue()
-                            st.session_state.canvas_file_id = str(uuid.uuid4())
-                            st.success("✅ 칠판 필기가 정상 제출되었습니다!")
-                            st.rerun()
-                    except RuntimeError:
-                        # 3단계: 브라우저 전송 지연 예외 처리
-                        st.error("🔄 그림 데이터가 넘어오고 있어요! 1초만 기다렸다가 다시 버튼을 눌러주세요.")
-
-if st.session_state.saved_canvas_bytes is not None and uploaded_problem is None:
-    uploaded_problem = CanvasFile(st.session_state.saved_canvas_bytes, st.session_state.canvas_file_id)
+    with up_c2:
+        uploaded_solution = st.file_uploader(
+            "2️⃣ 연습장 풀이 사진 (선택)", type=["jpg", "jpeg", "png"], key="sol_clean"
+        )
+else:
+    uploaded_problem = st.file_uploader(
+        "풀다가 막힌 문제 사진을 올려주세요!",
+        type=["jpg", "jpeg", "png"],
+        key="prob_clean",
+    )
 
 prob_id = uploaded_problem.file_id if uploaded_problem else "none"
 sol_id = uploaded_solution.file_id if uploaded_solution else "none"
@@ -871,83 +793,10 @@ if len(st.session_state.messages) > 1 and st.session_state.messages[-1]["role"] 
             st.rerun()
 
 # ==========================================
-# 💬 하단 대화 입력 구역 (키보드 또는 연습장 필기)
+# 💬 심플 대화 입력창 (카톡 스타일)
 # ==========================================
-st.markdown("---")
-st.write("💬 **답변 제출하기** (키보드로 치거나 아래 연습장에 펜으로 적어보세요!)")
-
-reply_tab_text, reply_tab_canvas = st.tabs(["⌨️ 키보드 텍스트 답장", "✍️ 연습장 필기 답장 (S펜/애플펜슬)"])
-
-user_reply_content = None
-
-with reply_tab_text:
-    text_reply = st.chat_input("다혜 쌤 질문에 대한 답을 입력하세요...")
-    if text_reply:
-        user_reply_content = text_reply
-
-with reply_tab_canvas:
-    if st_canvas is not None:
-        st.caption("✍️ 아래 하얀 연습장에 펜으로 계산 과정이나 답을 자유롭게 적은 뒤 제출하세요!")
-
-        canvas_key = f"reply_canvas_{len(st.session_state.messages)}"
-
-        canvas_reply = st_canvas(
-            fill_color="rgba(0, 0, 0, 0)",
-            stroke_width=2,
-            stroke_color="#000000",
-            background_color="#FFFFFF",
-            height=280,
-            width=680,
-            drawing_mode="freedraw",
-            key=canvas_key,
-        )
-
-        # 🚨 [핵심 버그 픽스]: 펜으로 그릴 때마다 에러가 안 나는 찰나에 미리 세션에 안전하게 킵(Keep) 해둠
-        if canvas_reply is not None:
-            try:
-                if canvas_reply.image_data is not None:
-                    st.session_state[f"safe_img_{canvas_key}"] = canvas_reply.image_data
-            except RuntimeError:
-                pass  # 제출 버튼을 눌러서 에러가 나는 순간에는 무시함
-
-        if st.button("🚀 필기로 답장 보내기", use_container_width=True, type="primary"):
-            # 버튼을 눌러 캔버스가 멍청해진 상태(RuntimeError)를 무시하고, 아까 몰래 백업해 둔 이미지를 꺼냄
-            safe_img = st.session_state.get(f"safe_img_{canvas_key}")
-
-            # 캔버스에 진짜로 점 하나라도 찍었는지 json 데이터로 검증
-            has_drawing = False
-            if canvas_reply is not None and getattr(canvas_reply, "json_data", None) is not None:
-                if len(canvas_reply.json_data.get("objects", [])) > 0:
-                    has_drawing = True
-
-            if not has_drawing:
-                st.warning("⚠️ 연습장에 아무것도 적혀있지 않아요! 펜으로 먼저 답을 적어주세요.")
-            elif safe_img is not None:
-                # 안전하게 백업된 이미지 데이터로 OCR용 변환 진행
-                img = Image.fromarray(safe_img.astype("uint8"), "RGBA")
-                bg = Image.new("RGB", img.size, (255, 255, 255))
-                bg.paste(img, mask=img.split()[3])
-                buf = io.BytesIO()
-                bg.save(buf, format="JPEG")
-
-                user_reply_content = {
-                    "type": "handwriting",
-                    "bytes": buf.getvalue(),
-                }
-            else:
-                st.error("🔄 그림 저장에 실패했습니다. 펜으로 점을 하나만 더 찍고 다시 제출해주세요!")
-    else:
-        st.info("💡 칠판 라이브러리가 로딩 중이거나 텍스트 답장 모드를 이용해 주세요.")
-
-if user_reply_content:
-    if isinstance(user_reply_content, str):
-        st.session_state.messages.append({"role": "user", "content": user_reply_content})
-    else:
-        st.session_state.messages.append({
-            "role": "user",
-            "content": "(학생이 연습장에 손글씨로 적은 답변입니다)",
-            "image_bytes": user_reply_content["bytes"],
-        })
+if prompt := st.chat_input("다혜 쌤 질문에 답하거나 궁금한 점을 적어주세요..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
     st.rerun()
 
 # ==========================================
