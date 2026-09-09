@@ -888,7 +888,9 @@ with reply_tab_text:
 with reply_tab_canvas:
     if st_canvas is not None:
         st.caption("✍️ 아래 하얀 연습장에 펜으로 계산 과정이나 답을 자유롭게 적은 뒤 제출하세요!")
+
         canvas_key = f"reply_canvas_{len(st.session_state.messages)}"
+
         canvas_reply = st_canvas(
             fill_color="rgba(0, 0, 0, 0)",
             stroke_width=2,
@@ -899,34 +901,41 @@ with reply_tab_canvas:
             drawing_mode="freedraw",
             key=canvas_key,
         )
+
+        # 🚨 [핵심 버그 픽스]: 펜으로 그릴 때마다 에러가 안 나는 찰나에 미리 세션에 안전하게 킵(Keep) 해둠
+        if canvas_reply is not None:
+            try:
+                if canvas_reply.image_data is not None:
+                    st.session_state[f"safe_img_{canvas_key}"] = canvas_reply.image_data
+            except RuntimeError:
+                pass  # 제출 버튼을 눌러서 에러가 나는 순간에는 무시함
+
         if st.button("🚀 필기로 답장 보내기", use_container_width=True, type="primary"):
-            if canvas_reply is not None:
-                # 1단계: 캔버스에 실제로 선(objects)이 하나라도 그려졌는지 안전하게 확인
-                has_drawing = False
-                if getattr(canvas_reply, "json_data", None) is not None:
-                    objects = canvas_reply.json_data.get("objects", [])
-                    if len(objects) > 0:
-                        has_drawing = True
+            # 버튼을 눌러 캔버스가 멍청해진 상태(RuntimeError)를 무시하고, 아까 몰래 백업해 둔 이미지를 꺼냄
+            safe_img = st.session_state.get(f"safe_img_{canvas_key}")
 
-                if not has_drawing:
-                    st.warning("⚠️ 연습장에 아무것도 적혀있지 않아요! 펜으로 먼저 답을 적어주세요.")
-                else:
-                    # 2단계: 그림이 확실히 있을 때만 image_data에 접근 (RuntimeError 완벽 차단)
-                    try:
-                        if canvas_reply.image_data is not None:
-                            img = Image.fromarray(canvas_reply.image_data.astype("uint8"), "RGBA")
-                            bg = Image.new("RGB", img.size, (255, 255, 255))
-                            bg.paste(img, mask=img.split()[3])
-                            buf = io.BytesIO()
-                            bg.save(buf, format="JPEG")
+            # 캔버스에 진짜로 점 하나라도 찍었는지 json 데이터로 검증
+            has_drawing = False
+            if canvas_reply is not None and getattr(canvas_reply, "json_data", None) is not None:
+                if len(canvas_reply.json_data.get("objects", [])) > 0:
+                    has_drawing = True
 
-                            user_reply_content = {
-                                "type": "handwriting",
-                                "bytes": buf.getvalue(),
-                            }
-                    except RuntimeError:
-                        # 3단계: 브라우저 전송 지연 시 안전망
-                        st.error("🔄 그림 데이터가 앱으로 넘어오고 있어요! 1초만 기다렸다가 다시 버튼을 눌러주세요.")
+            if not has_drawing:
+                st.warning("⚠️ 연습장에 아무것도 적혀있지 않아요! 펜으로 먼저 답을 적어주세요.")
+            elif safe_img is not None:
+                # 안전하게 백업된 이미지 데이터로 OCR용 변환 진행
+                img = Image.fromarray(safe_img.astype("uint8"), "RGBA")
+                bg = Image.new("RGB", img.size, (255, 255, 255))
+                bg.paste(img, mask=img.split()[3])
+                buf = io.BytesIO()
+                bg.save(buf, format="JPEG")
+
+                user_reply_content = {
+                    "type": "handwriting",
+                    "bytes": buf.getvalue(),
+                }
+            else:
+                st.error("🔄 그림 저장에 실패했습니다. 펜으로 점을 하나만 더 찍고 다시 제출해주세요!")
     else:
         st.info("💡 칠판 라이브러리가 로딩 중이거나 텍스트 답장 모드를 이용해 주세요.")
 
