@@ -687,17 +687,33 @@ with tab_draw:
             key="math_canvas",
         )
         if st.button("🚀 다 썼어요! 다혜 쌤 AI에게 제출하기", use_container_width=True):
-            if canvas_result is not None and canvas_result.image_data is not None:
-                img = Image.fromarray(canvas_result.image_data.astype("uint8"), "RGBA")
-                bg = Image.new("RGB", img.size, (255, 255, 255))
-                bg.paste(img, mask=img.split()[3])
-                buf = io.BytesIO()
-                bg.save(buf, format="JPEG")
+            if canvas_result is not None:
+                # 1단계: 상단 칠판에 필기 자국(objects)이 실제로 있는지 검사
+                has_drawing = False
+                if getattr(canvas_result, "json_data", None) is not None:
+                    objects = canvas_result.json_data.get("objects", [])
+                    if len(objects) > 0:
+                        has_drawing = True
 
-                st.session_state.saved_canvas_bytes = buf.getvalue()
-                st.session_state.canvas_file_id = str(uuid.uuid4())
-                st.success("✅ 칠판 필기가 정상 제출되었습니다!")
-                st.rerun()
+                if not has_drawing:
+                    st.warning("⚠️ 칠판에 아무것도 적혀있지 않아요! 문제나 풀이를 펜으로 먼저 적어주세요.")
+                else:
+                    # 2단계: 안전하게 image_data 접근
+                    try:
+                        if canvas_result.image_data is not None:
+                            img = Image.fromarray(canvas_result.image_data.astype("uint8"), "RGBA")
+                            bg = Image.new("RGB", img.size, (255, 255, 255))
+                            bg.paste(img, mask=img.split()[3])
+                            buf = io.BytesIO()
+                            bg.save(buf, format="JPEG")
+
+                            st.session_state.saved_canvas_bytes = buf.getvalue()
+                            st.session_state.canvas_file_id = str(uuid.uuid4())
+                            st.success("✅ 칠판 필기가 정상 제출되었습니다!")
+                            st.rerun()
+                    except RuntimeError:
+                        # 3단계: 브라우저 전송 지연 예외 처리
+                        st.error("🔄 그림 데이터가 넘어오고 있어요! 1초만 기다렸다가 다시 버튼을 눌러주세요.")
 
 if st.session_state.saved_canvas_bytes is not None and uploaded_problem is None:
     uploaded_problem = CanvasFile(st.session_state.saved_canvas_bytes, st.session_state.canvas_file_id)
