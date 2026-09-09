@@ -485,19 +485,20 @@ st.title("✏️ 알찬학원 신다혜 쌤의 1:1 수학 클리닉")
 
 if not st.session_state.authenticated:
     st.markdown("---")
-    st.subheader("🔒 수강생 입장하기")
-    st.caption("학생 본인의 이름과 2022 개정 교육과정에 맞춘 과목을 선택해 주세요.")
+    st.subheader("👋 수강생 입장하기")
+    st.caption("학생 본인의 이름과 2022 개정 교육과정에 맞춘 과목을 선택해 주세요. (비밀번호 없이 바로 입장!)")
 
     input_name = st.text_input("학생 이름 (예: 김철수):")
     input_grade = st.selectbox(
         "학년 / 과목 선택 (2022 개정 교육과정):",
         ["중2", "중3", "공통수학1", "공통수학2", "대수", "미적분1", "미적분2", "확률과 통계", "기하와 벡터"]
     )
-    input_pw = st.text_input("비밀번호:", type="password")
+    with st.expander("👑 선생님 관리자 로그인"):
+        admin_pw = st.text_input("관리자 비밀번호:", type="password", key="admin_pw_input")
 
-    if st.button("🔓 클리닉 입장하기", use_container_width=True):
+    if st.button("🚀 클리닉 입장하기", use_container_width=True):
         clean_name = input_name.strip()
-        if input_pw == ADMIN_PW:
+        if st.session_state.get("admin_pw_input", "") == ADMIN_PW:
             st.session_state.authenticated = True
             st.session_state.is_admin = True
             st.session_state.student_name = "신다혜 선생님 (관리자)"
@@ -505,15 +506,13 @@ if not st.session_state.authenticated:
             st.rerun()
         elif not clean_name:
             st.error("이름을 입력해 주세요!")
-        elif input_pw == MASTER_PW or input_pw == "1234":
+        else:
             st.session_state.authenticated = True
             st.session_state.is_admin = False
             st.session_state.student_name = clean_name
             st.session_state.student_grade = input_grade
             st.success(f"{clean_name} 학생 ({input_grade}), 환영해! 공부를 시작해 볼까?")
             st.rerun()
-        else:
-            st.error("비밀번호가 올바르지 않습니다. 선생님에게 문의해 주세요!")
     st.stop()
 
 if st.session_state.is_admin:
