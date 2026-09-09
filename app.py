@@ -885,13 +885,33 @@ with reply_tab_canvas:
             key=canvas_key,
         )
         if st.button("🚀 필기로 답장 보내기", use_container_width=True, type="primary"):
-            if canvas_reply is not None and canvas_reply.image_data is not None:
-                img = Image.fromarray(canvas_reply.image_data.astype("uint8"), "RGBA")
-                bg = Image.new("RGB", img.size, (255, 255, 255))
-                bg.paste(img, mask=img.split()[3])
-                buf = io.BytesIO()
-                bg.save(buf, format="JPEG")
-                user_reply_content = {"type": "handwriting", "bytes": buf.getvalue()}
+            if canvas_reply is not None:
+                # 1단계: 캔버스에 실제로 선(objects)이 하나라도 그려졌는지 안전하게 확인
+                has_drawing = False
+                if getattr(canvas_reply, "json_data", None) is not None:
+                    objects = canvas_reply.json_data.get("objects", [])
+                    if len(objects) > 0:
+                        has_drawing = True
+
+                if not has_drawing:
+                    st.warning("⚠️ 연습장에 아무것도 적혀있지 않아요! 펜으로 먼저 답을 적어주세요.")
+                else:
+                    # 2단계: 그림이 확실히 있을 때만 image_data에 접근 (RuntimeError 완벽 차단)
+                    try:
+                        if canvas_reply.image_data is not None:
+                            img = Image.fromarray(canvas_reply.image_data.astype("uint8"), "RGBA")
+                            bg = Image.new("RGB", img.size, (255, 255, 255))
+                            bg.paste(img, mask=img.split()[3])
+                            buf = io.BytesIO()
+                            bg.save(buf, format="JPEG")
+
+                            user_reply_content = {
+                                "type": "handwriting",
+                                "bytes": buf.getvalue(),
+                            }
+                    except RuntimeError:
+                        # 3단계: 브라우저 전송 지연 시 안전망
+                        st.error("🔄 그림 데이터가 앱으로 넘어오고 있어요! 1초만 기다렸다가 다시 버튼을 눌러주세요.")
     else:
         st.info("💡 칠판 라이브러리가 로딩 중이거나 텍스트 답장 모드를 이용해 주세요.")
 
