@@ -42,11 +42,45 @@ def extract_youtube_id(url):
     return None
 
 
+def send_telegram_alert(msg_type, content_preview):
+    """학생 질문 제출 시 선생님 폰으로 실시간 텔레그램 알림을 쏜다.
+
+    토큰/챗ID는 코드에 하드코딩하지 않고 st.secrets에서만 읽는다.
+    (TELEGRAM_TOKEN, TELEGRAM_CHAT_ID 를 .streamlit/secrets.toml 또는
+    배포 플랫폼의 Secrets에 설정해야 동작한다.)
+    """
+    token = st.secrets.get("TELEGRAM_TOKEN", "")
+    chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        return
+
+    text = (
+        f"📱 *[다혜 쌤 AI 클리닉 실시간 알림]*\n\n"
+        f"📌 *유형:* {msg_type}\n"
+        f"💬 *내용:* {content_preview[:150]}"
+    )
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown",
+    }
+    try:
+        requests.post(url, json=payload, timeout=2)
+    except Exception:
+        pass
+
+
 def log_to_slack_and_gsheet(student_name, student_grade, mode, student_text, ai_reply, is_sos=False):
     slack_webhook_url = st.secrets.get("SLACK_WEBHOOK_URL", "")
     slack_bot_token = st.secrets.get("SLACK_BOT_TOKEN", "")
     slack_channel_id = st.secrets.get("SLACK_CHANNEL_ID", "")
     gsheet_url = st.secrets.get("GSHEET_WEBHOOK_URL", "")
+
+    send_telegram_alert(
+        "🚨 SOS" if is_sos else mode,
+        student_text if student_text else "(사진 업로드)",
+    )
 
     kst = timezone(timedelta(hours=9))
     now_str = datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S")
