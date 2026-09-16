@@ -71,16 +71,42 @@ def send_telegram_alert(msg_type, content_preview):
         pass
 
 
-def log_to_slack_and_gsheet(student_name, student_grade, mode, student_text, ai_reply, is_sos=False):
+def send_telegram_photo(photo_bytes, student_name="익명 학생", extra_info=""):
+    """학생이 올린 문제 사진 원본을 텔레그램으로 전송합니다."""
+    token = st.secrets.get("TELEGRAM_TOKEN", "")
+    chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        return
+
+    url = f"https://api.telegram.org/bot{token}/sendPhoto"
+    caption = (
+        f"📱 *[다혜 쌤 AI 클리닉 - 새 문제 접수]*\n\n"
+        f"👤 *학생:* {student_name}\n"
+        f"💬 *메모:* {extra_info[:100]}"
+    )
+
+    files = {"photo": ("problem.jpg", photo_bytes, "image/jpeg")}
+    data = {"chat_id": chat_id, "caption": caption, "parse_mode": "Markdown"}
+
+    try:
+        requests.post(url, data=data, files=files, timeout=5)
+    except Exception:
+        pass
+
+
+def log_to_slack_and_gsheet(student_name, student_grade, mode, student_text, ai_reply, is_sos=False, skip_telegram=False):
     slack_webhook_url = st.secrets.get("SLACK_WEBHOOK_URL", "")
     slack_bot_token = st.secrets.get("SLACK_BOT_TOKEN", "")
     slack_channel_id = st.secrets.get("SLACK_CHANNEL_ID", "")
     gsheet_url = st.secrets.get("GSHEET_WEBHOOK_URL", "")
 
-    send_telegram_alert(
-        "🚨 SOS" if is_sos else mode,
-        student_text if student_text else "(사진 업로드)",
-    )
+    # 사진 업로드 건은 send_telegram_photo가 이미 원본 사진 + 학생 이름을 텔레그램으로
+    # 보냈으므로, 여기서 중복으로 텍스트 알림을 또 쏘지 않는다.
+    if not skip_telegram:
+        send_telegram_alert(
+            "🚨 SOS" if is_sos else mode,
+            student_text if student_text else "(사진 업로드)",
+        )
 
     kst = timezone(timedelta(hours=9))
     now_str = datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S")
@@ -689,8 +715,8 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
         st.session_state.messages = []
 
         client = anthropic.Anthropic(api_key=api_key)
-        uploaded_problem.seek(0)
-        p_bytes = uploaded_problem.read()
+        p_bytes = uploaded_problem.getvalue()
+        send_telegram_photo(p_bytes, st.session_state.student_name, mode)
 
         content_blocks = [
             {
@@ -719,7 +745,7 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
-                log_to_slack_and_gsheet(st.session_state.student_name, st.session_state.student_grade, mode, "문제 사진 업로드 제출", bot_reply)
+                log_to_slack_and_gsheet(st.session_state.student_name, st.session_state.student_grade, mode, "문제 사진 업로드 제출", bot_reply, skip_telegram=True)
                 st.rerun()
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
@@ -730,8 +756,8 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
 
         client = anthropic.Anthropic(api_key=api_key)
 
-        uploaded_problem.seek(0)
-        p_bytes = uploaded_problem.read()
+        p_bytes = uploaded_problem.getvalue()
+        send_telegram_photo(p_bytes, st.session_state.student_name, f"{mode} - 문제")
 
         content_blocks = [
             {
@@ -745,8 +771,8 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
         ]
 
         if uploaded_solution:
-            uploaded_solution.seek(0)
-            s_bytes = uploaded_solution.read()
+            s_bytes = uploaded_solution.getvalue()
+            send_telegram_photo(s_bytes, st.session_state.student_name, f"{mode} - 풀이")
             content_blocks.append(
                 {
                     "type": "image",
@@ -775,7 +801,7 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
-                log_to_slack_and_gsheet(st.session_state.student_name, st.session_state.student_grade, mode, "풀이 검토 사진 제출", bot_reply)
+                log_to_slack_and_gsheet(st.session_state.student_name, st.session_state.student_grade, mode, "풀이 검토 사진 제출", bot_reply, skip_telegram=True)
                 st.rerun()
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
