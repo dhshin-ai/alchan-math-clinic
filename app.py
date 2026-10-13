@@ -27,6 +27,10 @@ try:
 except Exception:
     api_key = None
 
+# 이 프로젝트는 전부 Anthropic Claude(비전 포함) 하나로 통일되어 있다 - Gemini 등 다른
+# 모델/SDK는 쓰지 않는다. 사진 분석(질문 클리닉/오답 첨삭/칠판 판서 추출) 전부 이 모델을 쓴다.
+MODEL_NAME = "claude-sonnet-4-5"
+
 try:
     MASTER_PW = st.secrets["STUDENT_CODE"]
 except Exception:
@@ -309,7 +313,7 @@ def render_teacher_dashboard():
                     st.success(f"✅ {board_grade} 칠판 판서에서 핵심 개념을 추출했어요! 아래에서 확인하고 저장해 주세요.")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"판서 분석 중 오류가 발생했습니다: {e}")
+                    show_friendly_error(e, "😥 칠판 판서 분석 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요.")
 
     st.markdown("---")
 
@@ -813,6 +817,14 @@ def get_response_text(response):
     return cleaned.strip()
 
 
+def show_friendly_error(exc, friendly_message="😥 일시적인 오류가 발생했어요. 잠시 후 다시 시도해 주세요."):
+    """예외가 나면 학생/선생님 화면에는 친절한 한 줄만 보여주고, 기술적인 원문은 접어서
+    필요할 때만(디버깅 등) 펼쳐 보게 한다. raw 예외 문자열을 화면에 그대로 띄우지 않는다."""
+    st.error(friendly_message)
+    with st.expander("기술적인 오류 내용 보기"):
+        st.code(str(exc))
+
+
 def is_safe_matplotlib_code(code_str):
     """모델이 생성한 도형 코드를 exec 하기 전 AST 화이트리스트로 검증한다.
 
@@ -1279,6 +1291,8 @@ if "kakao_needs_grade" not in st.session_state:
     st.session_state.kakao_needs_grade = False
 if "kakao_login_error" not in st.session_state:
     st.session_state.kakao_login_error = None
+if "kakao_login_error_detail" not in st.session_state:
+    st.session_state.kakao_login_error_detail = None
 if "clinic_messages" not in st.session_state:
     st.session_state.clinic_messages = []
 if "review_messages" not in st.session_state:
@@ -1386,7 +1400,8 @@ if not st.session_state.authenticated and "code" in st.query_params:
                 st.session_state.pop("pass_card_bytes", None)
                 st.session_state.kakao_needs_grade = True
         except Exception as e:
-            st.session_state.kakao_login_error = f"카카오 로그인에 실패했습니다: {e}"
+            st.session_state.kakao_login_error = "😥 카카오 로그인에 실패했어요. 잠시 후 다시 시도해 주세요."
+            st.session_state.kakao_login_error_detail = str(e)
     st.rerun()
 
 if not st.session_state.authenticated and "error" in st.query_params:
@@ -1418,8 +1433,6 @@ if st.session_state.authenticated:
     else:
         st.caption("💤 아직 연속 기록이 없어요. 오늘 '💮 개념 PASS'에 도전해서 스트릭을 시작해보자!")
 
-MODEL_NAME = "claude-sonnet-4-5"
-
 
 def render_login_required_gate(feature_label):
     """로그인 전 상태에서 각 탭 내부에 뜨는 안내.
@@ -1430,7 +1443,11 @@ def render_login_required_gate(feature_label):
     """
     if st.session_state.kakao_login_error:
         st.error(st.session_state.kakao_login_error)
+        if st.session_state.get("kakao_login_error_detail"):
+            with st.expander("기술적인 오류 내용 보기"):
+                st.code(st.session_state.kakao_login_error_detail)
         st.session_state.kakao_login_error = None
+        st.session_state.kakao_login_error_detail = None
 
     if st.session_state.kakao_needs_grade:
         st.markdown(
@@ -1619,7 +1636,7 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                 persist_current_student()
                 st.rerun()
             except Exception as e:
-                st.error(f"오류가 발생했습니다: {e}")
+                show_friendly_error(e)
 
     # ==========================================
     # 대화 기록: 오래된 턴은 접힌 expander, 가장 최근 1턴(질문+답변)만 바로 보이게
@@ -1716,7 +1733,7 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                     persist_current_student()
                     st.rerun()
                 except Exception as e:
-                    st.error(f"오류가 발생했습니다: {e}")
+                    show_friendly_error(e)
 
 
 def render_question_clinic_tab():
@@ -1812,7 +1829,7 @@ def render_pass_tab():
                             persist_current_student()
                             st.rerun()
                         except Exception as e:
-                            st.error(f"오류가 발생했습니다: {e}")
+                            show_friendly_error(e)
         else:
             top_c1, top_c2 = st.columns([3, 1])
             with top_c1:
@@ -1926,7 +1943,7 @@ def render_pass_tab():
                                 persist_current_student()
                                 st.rerun()
                             except Exception as e:
-                                st.error(f"오류가 발생했습니다: {e}")
+                                show_friendly_error(e)
 
     with pass_col_history:
         with st.expander("📝 이전 질문/기록 보기", expanded=False):
