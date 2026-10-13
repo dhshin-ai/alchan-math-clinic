@@ -113,7 +113,7 @@ def _student_data_path(kakao_id):
 
 
 def _serialize_messages(messages):
-    """st.session_state.messages를 JSON으로 저장 가능한 형태로 변환한다 (이미지는 base64)."""
+    """메시지 리스트(clinic/review/pass 공용)를 JSON으로 저장 가능한 형태로 변환한다 (이미지는 base64)."""
     out = []
     for msg in messages:
         m = {"role": msg["role"], "content": msg["content"]}
@@ -129,7 +129,7 @@ def _serialize_messages(messages):
 
 
 def _deserialize_messages(raw_messages):
-    """저장된 JSON을 다시 st.session_state.messages 형태(이미지는 bytes)로 복원한다."""
+    """저장된 JSON을 다시 메시지 리스트 형태(이미지는 bytes)로 복원한다."""
     out = []
     for msg in raw_messages:
         m = {"role": msg["role"], "content": msg["content"]}
@@ -145,11 +145,20 @@ def _deserialize_messages(raw_messages):
 
 
 def load_student_data(kakao_id):
-    """카카오 고유 회원번호로 저장된 학생의 과목/모드/대화 기록/PASS 기록을 불러온다."""
+    """카카오 고유 회원번호로 저장된 학생의 과목/탭별 대화 기록/PASS 기록을 불러온다."""
     try:
         with open(_student_data_path(kakao_id), "r", encoding="utf-8") as f:
             data = json.load(f)
-        data["messages"] = _deserialize_messages(data.get("messages", []))
+
+        # 구버전 포맷(messages + selected_mode 단일 필드) 호환: 모드에 맞는 탭으로 이관
+        if "clinic_messages" not in data and "messages" in data:
+            if data.get("selected_mode") == "✍️ 내 풀이 검토 (문제 + 연습장)":
+                data["review_messages"] = data.get("messages", [])
+            else:
+                data["clinic_messages"] = data.get("messages", [])
+
+        data["clinic_messages"] = _deserialize_messages(data.get("clinic_messages", []))
+        data["review_messages"] = _deserialize_messages(data.get("review_messages", []))
         data["pass_messages"] = _deserialize_messages(data.get("pass_messages", []))
         data.setdefault("pass_topic", None)
         data.setdefault("pass_completed", False)
@@ -163,17 +172,17 @@ def load_student_data(kakao_id):
 
 
 def save_student_data(
-    kakao_id, nickname, student_grade, selected_mode, messages,
+    kakao_id, nickname, student_grade, clinic_messages, review_messages,
     pass_topic=None, pass_messages=None, pass_completed=False, pass_records=None,
     pass_concept_summary="", pass_completed_date="", pass_grade="",
 ):
-    """새로고침/재접속 후에도 대화 기록·PASS 진행 상황·PASS 기록이 이어지도록 학생별 파일로 저장한다."""
+    """새로고침/재접속 후에도 탭별 대화 기록·PASS 진행 상황·PASS 기록이 이어지도록 학생별 파일로 저장한다."""
     data = {
         "kakao_id": kakao_id,
         "nickname": nickname,
         "student_grade": student_grade,
-        "selected_mode": selected_mode,
-        "messages": _serialize_messages(messages),
+        "clinic_messages": _serialize_messages(clinic_messages),
+        "review_messages": _serialize_messages(review_messages),
         "pass_topic": pass_topic,
         "pass_messages": _serialize_messages(pass_messages or []),
         "pass_completed": pass_completed,
@@ -191,14 +200,14 @@ def save_student_data(
 
 
 def persist_current_student():
-    """현재 세션(학년/모드/대화 기록/PASS 진행 상황)을 로그인한 카카오 회원번호 파일에 저장한다."""
+    """현재 세션(학년/탭별 대화 기록/PASS 진행 상황)을 로그인한 카카오 회원번호 파일에 저장한다."""
     if st.session_state.get("kakao_id"):
         save_student_data(
             st.session_state.kakao_id,
             st.session_state.student_name,
             st.session_state.student_grade,
-            st.session_state.selected_mode,
-            st.session_state.messages,
+            st.session_state.get("clinic_messages", []),
+            st.session_state.get("review_messages", []),
             pass_topic=st.session_state.get("pass_topic"),
             pass_messages=st.session_state.get("pass_messages", []),
             pass_completed=st.session_state.get("pass_completed", False),
@@ -267,13 +276,27 @@ def render_teacher_dashboard():
 
     st.caption(f"총 {len(records)}명의 학생 데이터가 저장되어 있습니다.")
 
+    def _render_msg_list(msg_list):
+        for msg in msg_list:
+            role_label = "👤 학생" if msg.get("role") == "user" else "🤖 AI"
+            st.markdown(f"**{role_label}**")
+            if msg.get("images"):
+                cols = st.columns(len(msg["images"]))
+                for col, img in zip(cols, msg["images"]):
+                    with col:
+                        st.image(img["bytes"], width=160)
+            if msg.get("content"):
+                st.write(msg["content"])
+            st.markdown("---")
+
     for data in records:
         nickname = data.get("nickname", "익명 학생")
         grade = data.get("student_grade", "-")
-        messages = data.get("messages", [])
+        clinic_messages = data.get("clinic_messages", [])
+        review_messages = data.get("review_messages", [])
         pass_records = data.get("pass_records", [])
         updated_at = data.get("updated_at", "")
-        q_count = len([m for m in messages if m.get("role") == "user"])
+        q_count = len([m for m in clinic_messages + review_messages if m.get("role") == "user"])
 
         with st.expander(f"👤 {nickname} ({grade}) · 질문 {q_count}건 · PASS {len(pass_records)}건"):
             st.caption(f"🆔 카카오 회원번호: {data.get('kakao_id', '-')} · 마지막 업데이트: {updated_at}")
@@ -285,21 +308,17 @@ def render_teacher_dashboard():
             else:
                 st.caption("아직 PASS 기록이 없습니다.")
 
-            st.markdown("##### 🙋 질문 클리닉 대화 내역")
-            if messages:
-                for msg in messages:
-                    role_label = "👤 학생" if msg.get("role") == "user" else "🤖 AI"
-                    st.markdown(f"**{role_label}**")
-                    if msg.get("images"):
-                        cols = st.columns(len(msg["images"]))
-                        for col, img in zip(cols, msg["images"]):
-                            with col:
-                                st.image(img["bytes"], width=160)
-                    if msg.get("content"):
-                        st.write(msg["content"])
-                    st.markdown("---")
+            st.markdown("##### ❓ 질문 클리닉 대화 내역")
+            if clinic_messages:
+                _render_msg_list(clinic_messages)
             else:
-                st.caption("아직 질문 클리닉 대화 내역이 없습니다.")
+                st.caption("아직 대화 내역이 없습니다.")
+
+            st.markdown("##### 🔍 오답 첨삭 대화 내역")
+            if review_messages:
+                _render_msg_list(review_messages)
+            else:
+                st.caption("아직 대화 내역이 없습니다.")
 
 
 def send_telegram_alert(msg_type, content_preview):
@@ -494,87 +513,35 @@ def inject_custom_css():
         color: #000000 !important;
     }
 
-    /* 오직 메인 모드 선택 버튼 2개(btn_mode1, btn_mode2)만 대형 카드 디자인 적용 */
-    div[data-testid="stKey-btn_mode1"] button,
-    div[data-testid="stKey-btn_mode2"] button {
-        width: 100% !important;
-        min-height: 230px !important;
-        border-radius: 18px !important;
-        border: 2.5px solid #3A449A !important;
-        background-color: #FFFFFF !important;
-        box-shadow: 0 6px 16px rgba(58, 68, 154, 0.08) !important;
-        text-align: center !important;
-        padding: 1.6rem 1rem !important;
-        transition: all 0.25s ease-in-out !important;
+    /* ==========================================
+       💬 오리지널 카카오 로그인 버튼 (공식 브랜드 컬러)
+       ========================================== */
+    .kakao-login-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.45rem;
+        width: 100%;
+        background-color: #FEE500;
+        color: #000000 !important;
+        font-weight: 700;
+        font-size: 1.05rem;
+        text-decoration: none !important;
+        border-radius: 12px;
+        padding: 0.85rem 1rem;
+        margin: 0.6rem 0;
+        box-shadow: 0 4px 10px rgba(254, 229, 0, 0.45);
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
     }
 
-    div[data-testid="stKey-btn_mode1"] button *,
-    div[data-testid="stKey-btn_mode2"] button * {
-        white-space: pre-wrap !important;
-        word-break: keep-all !important;
+    .kakao-login-btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 16px rgba(254, 229, 0, 0.6);
     }
 
-    div[data-testid="stKey-btn_mode1"] button p,
-    div[data-testid="stKey-btn_mode2"] button p {
-        margin: 0.3rem 0 !important;
-        line-height: 1.55 !important;
-        font-size: 0.92rem !important;
-        font-weight: 500 !important;
-        color: #475569 !important;
-    }
-
-    div[data-testid="stKey-btn_mode1"] button strong,
-    div[data-testid="stKey-btn_mode2"] button strong {
-        font-size: 1.45rem !important;
-        font-weight: 800 !important;
-        color: #3A449A !important;
-        display: block !important;
-        margin-bottom: 0.2rem !important;
-        line-height: 1.3 !important;
-    }
-
-    div[data-testid="stKey-btn_mode1"] button em,
-    div[data-testid="stKey-btn_mode2"] button em {
-        font-size: 1.05rem !important;
-        font-weight: 700 !important;
-        font-style: normal !important;
-        color: #00A19D !important;
-        display: block !important;
-        margin-bottom: 0.6rem !important;
-        line-height: 1.3 !important;
-    }
-
-    div[data-testid="stKey-btn_mode1"] button:hover,
-    div[data-testid="stKey-btn_mode2"] button:hover {
-        border-color: #00A19D !important;
-        background-color: #F0FDFA !important;
-        box-shadow: 0 10px 24px rgba(0, 161, 157, 0.18) !important;
-        transform: translateY(-3px) !important;
-    }
-
-    /* 모바일 화면 대응 */
-    @media (max-width: 768px) {
-        div[data-testid="stKey-btn_mode1"] button,
-        div[data-testid="stKey-btn_mode2"] button {
-            min-height: 210px !important;
-            padding: 1.2rem 0.8rem !important;
-            margin-bottom: 0.8rem !important;
-        }
-
-        div[data-testid="stKey-btn_mode1"] button strong,
-        div[data-testid="stKey-btn_mode2"] button strong {
-            font-size: 1.3rem !important;
-        }
-
-        div[data-testid="stKey-btn_mode1"] button em,
-        div[data-testid="stKey-btn_mode2"] button em {
-            font-size: 1.0rem !important;
-        }
-
-        div[data-testid="stKey-btn_mode1"] button p,
-        div[data-testid="stKey-btn_mode2"] button p {
-            font-size: 0.88rem !important;
-        }
+    .kakao-login-btn-icon {
+        font-size: 1.2rem;
+        line-height: 1;
     }
 
     [data-testid="stFileUploader"] {
@@ -1247,10 +1214,14 @@ if "kakao_needs_grade" not in st.session_state:
     st.session_state.kakao_needs_grade = False
 if "kakao_login_error" not in st.session_state:
     st.session_state.kakao_login_error = None
-if "selected_mode" not in st.session_state:
-    st.session_state.selected_mode = None
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+if "clinic_messages" not in st.session_state:
+    st.session_state.clinic_messages = []
+if "review_messages" not in st.session_state:
+    st.session_state.review_messages = []
+if "clinic_last_upload_key" not in st.session_state:
+    st.session_state.clinic_last_upload_key = None
+if "review_last_upload_key" not in st.session_state:
+    st.session_state.review_last_upload_key = None
 if "pass_topic" not in st.session_state:
     st.session_state.pass_topic = None
 if "pass_messages" not in st.session_state:
@@ -1273,9 +1244,22 @@ st.title("✏️ 알찬학원 신다혜 쌤의 1:1 수학 클리닉")
 # ==========================================
 # 🕵️ 시크릿 선생님 모드 (사이드바 맨 아래, 학생 화면은 그대로 평범한 접힌 사이드바)
 # 비밀번호가 맞으면 학생 로그인 절차 없이 바로 대시보드로 진입한다.
+# (로그아웃 버튼도 여기 둔다 - 메인 화면에는 로그인 상태를 알리는 텍스트를 일절 띄우지 않는다)
 # ==========================================
 with st.sidebar:
-    st.markdown("<div style='height: 62vh;'></div>", unsafe_allow_html=True)
+    if st.session_state.authenticated:
+        if st.button("🔓 로그아웃", use_container_width=True, key="sidebar_logout_btn"):
+            persist_current_student()
+            for key in [
+                "authenticated", "student_name", "kakao_id", "kakao_needs_grade",
+                "clinic_messages", "review_messages", "clinic_last_upload_key", "review_last_upload_key",
+                "slack_thread_ts", "pass_topic", "pass_messages", "pass_completed", "pass_records",
+                "pass_concept_summary", "pass_completed_date", "pass_card_bytes", "pass_grade",
+            ]:
+                st.session_state.pop(key, None)
+            st.rerun()
+
+    st.markdown("<div style='height: 55vh;'></div>", unsafe_allow_html=True)
     teacher_pw_input = st.text_input("선생님 모드", type="password", key="teacher_pw_input")
     if teacher_pw_input and teacher_pw_input == TEACHER_DASHBOARD_PASSWORD:
         st.session_state.teacher_mode = True
@@ -1287,6 +1271,7 @@ if st.session_state.teacher_mode:
 # ==========================================
 # 🔐 카카오 로그인 콜백 처리
 # (인가 코드(code) → 액세스 토큰 → 닉네임/고유 회원번호 조회)
+# 탭이 항상 먼저 보이는 구조라, 이 콜백 처리만은 로그인 여부와 무관하게 맨 위에서 돌아야 한다.
 # ==========================================
 if not st.session_state.authenticated and "code" in st.query_params:
     auth_code = st.query_params.get("code")
@@ -1301,10 +1286,10 @@ if not st.session_state.authenticated and "code" in st.query_params:
 
             saved = load_student_data(kakao_id)
             if saved and saved.get("student_grade"):
-                # 이미 과목을 선택해 둔 적이 있는 학생 → 대화 기록까지 그대로 복원하고 바로 입장
+                # 이미 과목을 선택해 둔 적이 있는 학생 → 탭별 대화 기록까지 그대로 복원하고 바로 입장
                 st.session_state.student_grade = saved["student_grade"]
-                st.session_state.selected_mode = saved.get("selected_mode")
-                st.session_state.messages = saved.get("messages", [])
+                st.session_state.clinic_messages = saved.get("clinic_messages", [])
+                st.session_state.review_messages = saved.get("review_messages", [])
                 st.session_state.pass_topic = saved.get("pass_topic")
                 st.session_state.pass_messages = saved.get("pass_messages", [])
                 st.session_state.pass_completed = saved.get("pass_completed", False)
@@ -1316,8 +1301,8 @@ if not st.session_state.authenticated and "code" in st.query_params:
                 st.session_state.authenticated = True
             else:
                 # 첫 로그인 → 과목 선택 한 번만 더 받는다 (이전 세션의 흔적이 섞이지 않게 초기화)
-                st.session_state.selected_mode = None
-                st.session_state.messages = []
+                st.session_state.clinic_messages = []
+                st.session_state.review_messages = []
                 st.session_state.pass_topic = None
                 st.session_state.pass_messages = []
                 st.session_state.pass_completed = False
@@ -1336,180 +1321,191 @@ if not st.session_state.authenticated and "error" in st.query_params:
     st.session_state.kakao_login_error = "카카오 로그인이 취소되었습니다."
     st.rerun()
 
-if not st.session_state.authenticated:
-    st.markdown("---")
+if st.session_state.authenticated:
+    _pass_streak = calculate_pass_streak(st.session_state.pass_records)
+    if _pass_streak > 0:
+        st.markdown(
+            f"""
+            <div style="
+                display: inline-block;
+                background: linear-gradient(135deg, #FF8A3D, #FF5A5F);
+                color: #FFFFFF;
+                font-weight: 800;
+                font-size: 1.05rem;
+                padding: 0.55rem 1.3rem;
+                border-radius: 999px;
+                box-shadow: 0 6px 16px rgba(255, 90, 95, 0.35);
+                margin-bottom: 1rem;
+            ">
+                🔥 현재 {_pass_streak}일 연속 PASS 중!
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.caption("💤 아직 연속 기록이 없어요. 오늘 '💮 개념 PASS'에 도전해서 스트릭을 시작해보자!")
 
+MODEL_NAME = "claude-sonnet-4-5"
+
+
+def render_login_required_gate(feature_label):
+    """로그인 전 상태에서 각 탭 내부에 뜨는 안내.
+
+    카카오 인증까지는 끝났지만 과목을 아직 안 고른 학생에게는(kakao_needs_grade)
+    학년 선택 1회 단계를 보여주고, 그 외에는 안내 문구 + 오리지널 카카오 로그인 버튼을 보여준다.
+    탭 3개가 동시에 이 함수를 호출할 수 있으므로, 위젯 key는 반드시 feature_label로 구분한다.
+    """
     if st.session_state.kakao_login_error:
         st.error(st.session_state.kakao_login_error)
         st.session_state.kakao_login_error = None
 
     if st.session_state.kakao_needs_grade:
-        st.subheader(f"👋 {st.session_state.student_name} 님, 반가워요!")
-        st.caption("2022 개정 교육과정에 맞춘 과목을 선택하고 클리닉을 시작해 주세요. (최초 1회만 선택)")
+        st.markdown(
+            f"""
+            <div class="guide-box">
+                <div class="guide-title">👋 {st.session_state.student_name} 님, 반가워요!</div>
+                <div class="guide-item">2022 개정 교육과정에 맞춘 과목을 선택하고 시작해 주세요. (최초 1회만 선택)</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         input_grade = st.selectbox(
             "학년 / 과목 선택 (2022 개정 교육과정):",
-            ["중2", "중3", "공통수학1", "공통수학2", "대수", "미적분1", "미적분2", "확률과 통계", "기하와 벡터"]
+            ["중2", "중3", "공통수학1", "공통수학2", "대수", "미적분1", "미적분2", "확률과 통계", "기하와 벡터"],
+            key=f"grade_select_{feature_label}",
         )
-        if st.button("🚀 클리닉 입장하기", use_container_width=True):
+        if st.button("🚀 시작하기", key=f"grade_start_{feature_label}", use_container_width=True):
             st.session_state.student_grade = input_grade
             st.session_state.authenticated = True
             st.session_state.kakao_needs_grade = False
             persist_current_student()
             st.rerun()
     else:
-        st.subheader("👋 수강생 입장하기")
-        st.caption("카카오 계정으로 로그인하면 대화 기록이 안전하게 저장돼서, 다음에 또 이어서 질문할 수 있어요!")
-
-        if KAKAO_CLIENT_ID:
-            st.link_button("💬 카카오로 로그인", get_kakao_login_url(), use_container_width=True, type="primary")
-        else:
-            st.warning("카카오 로그인이 아직 설정되지 않았습니다. 선생님에게 문의해 주세요.")
-    st.stop()
-
-if "last_upload_key" not in st.session_state:
-    st.session_state.last_upload_key = None
-
-system_prompt = load_system_prompt(st.session_state.student_grade)
-
-cap_col1, cap_col2 = st.columns([4, 1])
-with cap_col1:
-    st.caption(f"👤 현재 접속 학생: **{st.session_state.student_name}** | 🎓 과목: **{st.session_state.student_grade}**")
-with cap_col2:
-    if st.button("🔓 로그아웃", use_container_width=True):
-        persist_current_student()
-        for key in [
-            "authenticated", "student_name", "kakao_id", "kakao_needs_grade",
-            "selected_mode", "messages", "last_upload_key", "slack_thread_ts",
-            "pass_topic", "pass_messages", "pass_completed", "pass_records",
-            "pass_concept_summary", "pass_completed_date", "pass_card_bytes", "pass_grade",
-        ]:
-            st.session_state.pop(key, None)
-        st.rerun()
-
-_pass_streak = calculate_pass_streak(st.session_state.pass_records)
-if _pass_streak > 0:
-    st.markdown(
-        f"""
-        <div style="
-            display: inline-block;
-            background: linear-gradient(135deg, #FF8A3D, #FF5A5F);
-            color: #FFFFFF;
-            font-weight: 800;
-            font-size: 1.05rem;
-            padding: 0.55rem 1.3rem;
-            border-radius: 999px;
-            box-shadow: 0 6px 16px rgba(255, 90, 95, 0.35);
-            margin-bottom: 1rem;
-        ">
-            🔥 현재 {_pass_streak}일 연속 PASS 중!
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-else:
-    st.caption("💤 아직 연속 기록이 없어요. 오늘 '💮 개념 PASS'에 도전해서 스트릭을 시작해보자!")
-
-MODEL_NAME = "claude-sonnet-4-5"
-
-
-def render_clinic_tab():
-    if st.session_state.selected_mode is None:
         st.markdown(
-            """
-        <div class="guide-box">
-            <div class="guide-title">💡 클리닉 이용 안내</div>
-            <div class="guide-item">📢 <b>공지사항:</b> AI 조교가 다혜 쌤의 특허 풀이를 열심히 배우는 중이라 도형이나 고난도 문제는 가끔 어리바리할 수 있어! 힌트가 이상하거나 막히면 "🔓 80% 풀이 바로 보기" 버튼을 눌러봐!</div>
-            <div class="guide-item">❓ <b>풀이가 막혔어요:</b> 문제 사진 1장을 올리면, 정답 대신 스스로 답을 찾아갈 수 있게 질문을 던져줍니다.</div>
-            <div class="guide-item">✍️ <b>내 풀이 검토:</b> 사진 1장 또는 2장을 올리면 연습장 손글씨 풀이의 연산 실수를 콕 짚어줍니다.</div>
-        </div>
-        """,
+            f"""
+            <div class="guide-box" style="text-align:center;">
+                <div class="guide-title">🔒 로그인이 필요해요</div>
+                <div class="guide-item"><b>{feature_label}</b> 기능을 사용하려면 카카오로 로그인해주세요.</div>
+            </div>
+            """,
             unsafe_allow_html=True,
         )
-
-        st.markdown("### 💡 어떤 도움이 필요하신가요?")
-        col1, col2 = st.columns(2)
-
-        with col1:
-            btn1_text = (
-                "**❓ 풀이가 막혔어요**\n"
-                "*(스스로 풀어보기)*\n\n"
-                "📷 문제 사진 1장 필요\n\n"
-                "정답 대신 스스로 답을 찾아갈 수 있게\n\n"
-                "차근차근 질문을 던져줄게요!"
+        if KAKAO_CLIENT_ID:
+            st.markdown(
+                f'<a href="{get_kakao_login_url()}" class="kakao-login-btn">'
+                f'<span class="kakao-login-btn-icon">💬</span>카카오 로그인</a>',
+                unsafe_allow_html=True,
             )
-            if st.button(btn1_text, key="btn_mode1", use_container_width=True):
-                st.session_state.selected_mode = "❓ 스스로 풀어보기 (차근차근 질문)"
-                st.session_state.slack_thread_ts = None
-                st.rerun()
+        else:
+            st.warning("카카오 로그인이 아직 설정되지 않았습니다. 선생님에게 문의해 주세요.")
 
-        with col2:
-            btn2_text = (
-                "**✍️ 내 풀이 검토**\n"
-                "*(연습장 오답 클리닉)*\n\n"
-                "📷 사진 1장 또는 2장 가능\n\n"
-                "연습장 손글씨 풀이를 함께 올리면\n\n"
-                "어느 줄에서 연산 실수가 났는지 찾아줄게요!"
-            )
-            if st.button(btn2_text, key="btn_mode2", use_container_width=True):
-                st.session_state.selected_mode = "✍️ 내 풀이 검토 (문제 + 연습장)"
-                st.session_state.slack_thread_ts = None
-                st.rerun()
 
+def _render_clinic_message(msg):
+    with st.chat_message(msg["role"]):
+        if msg["role"] == "assistant":
+            render_assistant_content(msg["content"])
+        elif msg.get("images"):
+            for img in msg["images"]:
+                st.image(img["bytes"], width=320)
+            if msg["content"]:
+                st.caption(msg["content"])
+        else:
+            st.markdown(msg["content"])
+
+
+def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_uploader, caption_text):
+    """'❓ 질문 클리닉'과 '🔍 오답 첨삭' 탭이 공유하는 렌더러.
+
+    state_prefix로 세션 상태 키(clinic_* / review_*)를 분리해서, 두 탭이 Streamlit
+    특성상 매 스크립트 실행마다 동시에 렌더링되어도 서로의 대화 기록·업로드 상태를
+    덮어쓰지 않게 한다.
+    """
+    st.markdown(f"### {feature_label}")
+
+    if not st.session_state.authenticated:
+        render_login_required_gate(feature_label)
         return
 
-    mode = st.session_state.selected_mode
+    st.caption(caption_text)
 
-    top_col1, top_col2 = st.columns([3, 1])
-    with top_col1:
-        st.markdown(f"#### 📌 선택한 모드: **{mode}**")
-    with top_col2:
-        if st.button("🏠 첫 화면으로 (홈)", use_container_width=True):
-            st.session_state.selected_mode = None
-            st.session_state.messages = []
-            st.session_state.last_upload_key = None
-            st.session_state.slack_thread_ts = None
-            persist_current_student()
-            st.rerun()
+    messages_key = f"{state_prefix}_messages"
+    upload_key_key = f"{state_prefix}_last_upload_key"
+    system_prompt = load_system_prompt(st.session_state.student_grade)
 
-    st.markdown("---")
-
-    # ==========================================
-    # 📷 심플 문제 사진 업로드
-    # ==========================================
     uploaded_solution = None
-
-    st.markdown("### 📝 문제 올리기")
-    if mode == "✍️ 내 풀이 검토 (문제 + 연습장)":
+    if with_solution_uploader:
         up_c1, up_c2 = st.columns(2)
         with up_c1:
             uploaded_problem = st.file_uploader(
-                "1️⃣ 문제 사진 (또는 문제+풀이 사진)", type=["jpg", "jpeg", "png"], key="prob_clean"
+                "1️⃣ 문제 사진 (또는 문제+풀이 사진)", type=["jpg", "jpeg", "png"], key=f"{state_prefix}_prob"
             )
         with up_c2:
             uploaded_solution = st.file_uploader(
-                "2️⃣ 연습장 풀이 사진 (선택)", type=["jpg", "jpeg", "png"], key="sol_clean"
+                "2️⃣ 연습장 풀이 사진 (선택)", type=["jpg", "jpeg", "png"], key=f"{state_prefix}_sol"
             )
     else:
         uploaded_problem = st.file_uploader(
             "풀다가 막힌 문제 사진을 올려주세요!",
             type=["jpg", "jpeg", "png"],
-            key="prob_clean",
+            key=f"{state_prefix}_prob",
         )
 
     prob_id = uploaded_problem.file_id if uploaded_problem else "none"
     sol_id = uploaded_solution.file_id if uploaded_solution else "none"
-    curr_upload_key = f"{mode}_{prob_id}_{sol_id}"
+    curr_upload_key = f"{prob_id}_{sol_id}"
 
-    if api_key and (curr_upload_key != st.session_state.last_upload_key):
-        if mode == "❓ 스스로 풀어보기 (차근차근 질문)" and uploaded_problem:
-            st.session_state.last_upload_key = curr_upload_key
-            st.session_state.messages = []
+    if api_key and uploaded_problem and curr_upload_key != st.session_state.get(upload_key_key):
+        st.session_state[upload_key_key] = curr_upload_key
+        st.session_state[messages_key] = []
 
-            client = anthropic.Anthropic(api_key=api_key)
-            p_bytes = uploaded_problem.getvalue()
+        client = anthropic.Anthropic(api_key=api_key)
+        p_bytes = uploaded_problem.getvalue()
+
+        if with_solution_uploader:
+            send_telegram_photo(p_bytes, st.session_state.student_name, f"{mode} - 문제")
+            content_blocks = [{
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": uploaded_problem.type,
+                    "data": base64.b64encode(p_bytes).decode("utf-8"),
+                },
+            }]
+            images_submitted = [{"bytes": p_bytes, "mime": uploaded_problem.type}]
+            label = "📷 문제 사진을 올렸어요!"
+            if uploaded_solution:
+                s_bytes = uploaded_solution.getvalue()
+                send_telegram_photo(s_bytes, st.session_state.student_name, f"{mode} - 풀이")
+                content_blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": uploaded_solution.type,
+                        "data": base64.b64encode(s_bytes).decode("utf-8"),
+                    },
+                })
+                images_submitted.append({"bytes": s_bytes, "mime": uploaded_solution.type})
+                label = "📷 문제 + 풀이 사진을 올렸어요!"
+                api_text = (
+                    f"[모드: {mode} / 과목: {st.session_state.student_grade}] 문제 사진과 연습장 손글씨 풀이 사진 2장이 "
+                    "전달되었어. 첫 줄부터 줄 단위로 연산을 검증해서 잘한 점과 부호/계산 실수가 발생한 정확한 위치를 "
+                    "다정하게 지적해줘."
+                )
+            else:
+                api_text = (
+                    f"[모드: {mode} / 과목: {st.session_state.student_grade}] 이 사진 안의 손글씨 풀이를 첫 줄부터 "
+                    "줄 단위로 검증하여 잘한 점과 연산 실수가 발생한 정확한 위치를 콕 짚어라."
+                )
+            content_blocks.append({"type": "text", "text": api_text})
+            spinner_text = "손글씨 풀이를 줄 단위로 분석하는 중입니다..."
+            log_label = "풀이 검토 사진 제출"
+        else:
             send_telegram_photo(p_bytes, st.session_state.student_name, mode)
-
-            api_text = f"[모드: 스스로 풀어보기 / 과목: {st.session_state.student_grade}] 먼저 1단계로 [과목 > 대단원 > 중단원 > 세부 대표유형명] 4단계로 세부 출제 유형을 밝히고, 인식한 조건이나 각도를 먼저 확인한 뒤 2단계 힌트 질문을 던져라."
+            api_text = (
+                f"[모드: {mode} / 과목: {st.session_state.student_grade}] 먼저 1단계로 "
+                "[과목 > 대단원 > 중단원 > 세부 대표유형명] 4단계로 세부 출제 유형을 밝히고, 인식한 조건이나 각도를 "
+                "먼저 확인한 뒤 2단계 힌트 질문을 던져라."
+            )
             content_blocks = [
                 {
                     "type": "image",
@@ -1521,147 +1517,84 @@ def render_clinic_tab():
                 },
                 {"type": "text", "text": api_text},
             ]
+            images_submitted = [{"bytes": p_bytes, "mime": uploaded_problem.type}]
+            label = "📷 문제 사진을 올렸어요!"
+            spinner_text = "문제를 꼼꼼하게 살피는 중입니다..."
+            log_label = "문제 사진 업로드 제출"
 
-            with st.spinner("문제를 꼼꼼하게 살피는 중입니다..."):
-                try:
-                    response = client.messages.create(
-                        model=MODEL_NAME,
-                        max_tokens=2000,
-                        system=system_prompt,
-                        messages=[{"role": "user", "content": content_blocks}],
-                    )
-                    bot_reply = get_response_text(response)
-                    # 사진 제출 자체도 대화 기록에 남겨서 새로고침 후에도 사진 내역이 보이게 한다.
-                    st.session_state.messages.append({
-                        "role": "user",
-                        "content": "📷 문제 사진을 올렸어요!",
-                        "images": [{"bytes": p_bytes, "mime": uploaded_problem.type}],
-                        "api_text": api_text,
-                    })
-                    st.session_state.messages.append(
-                        {"role": "assistant", "content": bot_reply}
-                    )
-                    log_to_slack_and_gsheet(st.session_state.student_name, st.session_state.student_grade, mode, "문제 사진 업로드 제출", bot_reply, skip_telegram=True)
-                    persist_current_student()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"오류가 발생했습니다: {e}")
-
-        elif mode == "✍️ 내 풀이 검토 (문제 + 연습장)" and uploaded_problem:
-            st.session_state.last_upload_key = curr_upload_key
-            st.session_state.messages = []
-
-            client = anthropic.Anthropic(api_key=api_key)
-
-            p_bytes = uploaded_problem.getvalue()
-            send_telegram_photo(p_bytes, st.session_state.student_name, f"{mode} - 문제")
-
-            content_blocks = [
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": uploaded_problem.type,
-                        "data": base64.b64encode(p_bytes).decode("utf-8"),
-                    },
-                }
-            ]
-
-            if uploaded_solution:
-                s_bytes = uploaded_solution.getvalue()
-                send_telegram_photo(s_bytes, st.session_state.student_name, f"{mode} - 풀이")
-                content_blocks.append(
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": uploaded_solution.type,
-                            "data": base64.b64encode(s_bytes).decode("utf-8"),
-                        },
-                    }
+        with st.spinner(spinner_text):
+            try:
+                response = client.messages.create(
+                    model=MODEL_NAME,
+                    max_tokens=2000,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": content_blocks}],
                 )
-                prompt_guide = f"[모드: 내 풀이 검토 / 과목: {st.session_state.student_grade}] 문제 사진과 연습장 손글씨 풀이 사진 2장이 전달되었어. 첫 줄부터 줄 단위로 연산을 검증해서 잘한 점과 부호/계산 실수가 발생한 정확한 위치를 다정하게 지적해줘."
-            else:
-                prompt_guide = f"[모드: 내 풀이 검토 / 과목: {st.session_state.student_grade}] 이 사진 안의 손글씨 풀이를 첫 줄부터 줄 단위로 검증하여 잘한 점과 연산 실수가 발생한 정확한 위치를 콕 짚어라."
+                bot_reply = get_response_text(response)
+                # 사진 제출 자체도 대화 기록에 남겨서 새로고침 후에도 사진 내역이 보이게 한다.
+                st.session_state[messages_key].append({
+                    "role": "user",
+                    "content": label,
+                    "images": images_submitted,
+                    "api_text": api_text,
+                })
+                st.session_state[messages_key].append({"role": "assistant", "content": bot_reply})
+                log_to_slack_and_gsheet(
+                    st.session_state.student_name, st.session_state.student_grade, mode, log_label, bot_reply,
+                    skip_telegram=True,
+                )
+                persist_current_student()
+                st.rerun()
+            except Exception as e:
+                st.error(f"오류가 발생했습니다: {e}")
 
-            content_blocks.append({"type": "text", "text": prompt_guide})
-
-            with st.spinner("손글씨 풀이를 줄 단위로 분석하는 중입니다..."):
-                try:
-                    response = client.messages.create(
-                        model=MODEL_NAME,
-                        max_tokens=2000,
-                        system=system_prompt,
-                        messages=[{"role": "user", "content": content_blocks}],
-                    )
-                    bot_reply = get_response_text(response)
-                    images_submitted = [{"bytes": p_bytes, "mime": uploaded_problem.type}]
-                    label = "📷 문제 사진을 올렸어요!"
-                    if uploaded_solution:
-                        images_submitted.append({"bytes": s_bytes, "mime": uploaded_solution.type})
-                        label = "📷 문제 + 풀이 사진을 올렸어요!"
-                    # 사진 제출 자체도 대화 기록에 남겨서 새로고침 후에도 사진 내역이 보이게 한다.
-                    st.session_state.messages.append({
-                        "role": "user",
-                        "content": label,
-                        "images": images_submitted,
-                        "api_text": prompt_guide,
-                    })
-                    st.session_state.messages.append(
-                        {"role": "assistant", "content": bot_reply}
-                    )
-                    log_to_slack_and_gsheet(st.session_state.student_name, st.session_state.student_grade, mode, "풀이 검토 사진 제출", bot_reply, skip_telegram=True)
-                    persist_current_student()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"오류가 발생했습니다: {e}")
-
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            if msg["role"] == "assistant":
-                render_assistant_content(msg["content"])
-            elif msg.get("images"):
-                for img in msg["images"]:
-                    st.image(img["bytes"], width=320)
-                if msg["content"]:
-                    st.caption(msg["content"])
-            else:
-                st.markdown(msg["content"])
+    # ==========================================
+    # 대화 기록: 오래된 턴은 접힌 expander, 가장 최근 1턴(질문+답변)만 바로 보이게
+    # (새로고침 후 복원된 긴 기록이 한꺼번에 쏟아져 화면이 헷갈리는 걸 막는다)
+    # ==========================================
+    history = st.session_state[messages_key]
+    older, recent = (history[:-2], history[-2:]) if len(history) > 2 else ([], history)
+    if older:
+        with st.expander("📝 이전 질문/기록 보기", expanded=False):
+            for msg in older:
+                _render_clinic_message(msg)
+    for msg in recent:
+        _render_clinic_message(msg)
 
     # ==========================================
     # 🆘 학생 구출용 퀵 액션 버튼 (AI가 답변한 직후에만 노출)
     # ==========================================
-    if len(st.session_state.messages) > 1 and st.session_state.messages[-1]["role"] == "assistant":
+    if len(history) > 1 and history[-1]["role"] == "assistant":
         st.markdown("👇 **어떻게 풀어야 할지 막막하다면 버튼을 눌러주세요!**")
 
         btn_col1, btn_col2, btn_col3 = st.columns(3)
 
         with btn_col1:
-            if st.button("💡 다음 힌트만 살짝", use_container_width=True):
-                st.session_state.messages.append({"role": "user", "content": "다음 단계로 넘어가는 힌트만 살짝 알려줘."})
+            if st.button("💡 다음 힌트만 살짝", use_container_width=True, key=f"{state_prefix}_hint_btn"):
+                st.session_state[messages_key].append({"role": "user", "content": "다음 단계로 넘어가는 힌트만 살짝 알려줘."})
                 st.rerun()
 
         with btn_col2:
-            if st.button("🔓 80% 풀이 바로 보기", use_container_width=True, type="primary"):
-                st.session_state.messages.append({"role": "user", "content": "진짜 모르겠어. 날 괴롭히지 말고 풀이의 80%를 시원하게 바로 보여줘!"})
+            if st.button("🔓 80% 풀이 바로 보기", use_container_width=True, type="primary", key=f"{state_prefix}_80_btn"):
+                st.session_state[messages_key].append({"role": "user", "content": "진짜 모르겠어. 날 괴롭히지 말고 풀이의 80%를 시원하게 바로 보여줘!"})
                 st.rerun()
 
         with btn_col3:
-            if st.button("📝 유사문제 연습하기", use_container_width=True):
-                st.session_state.messages.append({"role": "user", "content": "이 개념을 쓰는 비슷한 다른 문제로 연습해보고 싶어."})
+            if st.button("📝 유사문제 연습하기", use_container_width=True, key=f"{state_prefix}_similar_btn"):
+                st.session_state[messages_key].append({"role": "user", "content": "이 개념을 쓰는 비슷한 다른 문제로 연습해보고 싶어."})
                 st.rerun()
 
     # ==========================================
     # 💬 심플 대화 입력창 (카톡 스타일)
     # ==========================================
-    if prompt := st.chat_input("다혜 쌤 질문에 답하거나 궁금한 점을 적어주세요..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
+    if prompt := st.chat_input("다혜 쌤 질문에 답하거나 궁금한 점을 적어주세요...", key=f"{state_prefix}_chat_input"):
+        st.session_state[messages_key].append({"role": "user", "content": prompt})
         st.rerun()
 
     # ==========================================
     # 🤖 마지막 메시지가 학생 답변이면 다혜 쌤 AI 응답 생성
     # ==========================================
-    if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
+    if st.session_state[messages_key] and st.session_state[messages_key][-1]["role"] == "user":
         if not api_key:
             st.error("API 키가 설정되지 않았습니다.")
             return
@@ -1672,7 +1605,7 @@ def render_clinic_tab():
         # 사진이 달린 턴은 최초 업로드 위젯이 아니라 messages에 저장해 둔
         # 이미지/지시문을 사용하므로, 새로고침 후 복원된 세션에서도 동일하게 동작한다.
         api_messages = []
-        for msg in st.session_state.messages:
+        for msg in st.session_state[messages_key]:
             if msg.get("images"):
                 blocks = [
                     {
@@ -1701,8 +1634,8 @@ def render_clinic_tab():
                     )
                     bot_reply = get_response_text(response)
                     render_assistant_content(bot_reply)
-                    st.session_state.messages.append({"role": "assistant", "content": bot_reply})
-                    last_student_text = st.session_state.messages[-2]["content"]
+                    st.session_state[messages_key].append({"role": "assistant", "content": bot_reply})
+                    last_student_text = st.session_state[messages_key][-2]["content"]
                     log_to_slack_and_gsheet(
                         st.session_state.student_name, st.session_state.student_grade, mode,
                         last_student_text, bot_reply,
@@ -1713,8 +1646,41 @@ def render_clinic_tab():
                     st.error(f"오류가 발생했습니다: {e}")
 
 
+def render_question_clinic_tab():
+    render_clinic_style_tab(
+        feature_label="❓ 질문 클리닉",
+        mode="❓ 질문 클리닉 (스스로 풀어보기)",
+        state_prefix="clinic",
+        with_solution_uploader=False,
+        caption_text="문제 사진 1장을 올리면, 정답 대신 스스로 답을 찾아갈 수 있게 차근차근 질문을 던져줄게!",
+    )
+
+
+def render_mistake_review_tab():
+    render_clinic_style_tab(
+        feature_label="🔍 오답 첨삭",
+        mode="🔍 오답 첨삭 (문제 + 연습장)",
+        state_prefix="review",
+        with_solution_uploader=True,
+        caption_text="사진 1장 또는 2장(문제+연습장 풀이)을 올리면, 어느 줄에서 연산 실수가 났는지 콕 짚어줄게!",
+    )
+
+
+def _render_pass_message(msg):
+    with st.chat_message(msg["role"]):
+        if msg["role"] == "assistant":
+            render_handwritten_note(msg["content"])
+        else:
+            st.markdown(msg["content"])
+
+
 def render_pass_tab():
-    st.markdown("### 💮 오늘의 개념 PASS")
+    st.markdown("### 💮 개념 PASS")
+
+    if not st.session_state.authenticated:
+        render_login_required_gate("💮 개념 PASS")
+        return
+
     st.caption("선생님이 오늘 정해준 범위 안에서, 핵심 개념이나 오개념을 확인하는 질문을 던져줄게.")
 
     render_stamp_board(st.session_state.pass_records)
@@ -1789,12 +1755,17 @@ def render_pass_tab():
                     persist_current_student()
                     st.rerun()
 
-            for msg in st.session_state.pass_messages:
-                with st.chat_message(msg["role"]):
-                    if msg["role"] == "assistant":
-                        render_handwritten_note(msg["content"])
-                    else:
-                        st.markdown(msg["content"])
+            # 대화 기록: 오래된 턴은 접힌 expander, 가장 최근 1턴만 바로 보이게
+            pass_history = st.session_state.pass_messages
+            pass_older, pass_recent = (
+                (pass_history[:-2], pass_history[-2:]) if len(pass_history) > 2 else ([], pass_history)
+            )
+            if pass_older:
+                with st.expander("📝 이전 질문/기록 보기", expanded=False):
+                    for msg in pass_older:
+                        _render_pass_message(msg)
+            for msg in pass_recent:
+                _render_pass_message(msg)
 
             if st.session_state.pass_completed:
                 st.markdown(
@@ -1885,24 +1856,27 @@ def render_pass_tab():
                                 st.error(f"오류가 발생했습니다: {e}")
 
     with pass_col_history:
-        st.markdown("##### 📋 나의 PASS 기록")
-        if st.session_state.pass_records:
-            for rec in reversed(st.session_state.pass_records):
-                safe_topic = html.escape(str(rec.get("topic", "")))
-                safe_date = html.escape(str(rec.get("completed_at", "")))
-                st.markdown(
-                    f"<div style='font-size:0.82rem; line-height:1.5; margin-bottom:0.6rem;'>"
-                    f"💮 <b>{safe_topic}</b><br>"
-                    f"<span style='color:#64748B;'>🗓️ {safe_date}</span>"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-        else:
-            st.caption("아직 PASS한 단원이 없어요. 지금 도전해볼까?")
+        with st.expander("📝 이전 질문/기록 보기", expanded=False):
+            st.markdown("##### 📋 나의 PASS 기록")
+            if st.session_state.pass_records:
+                for rec in reversed(st.session_state.pass_records):
+                    safe_topic = html.escape(str(rec.get("topic", "")))
+                    safe_date = html.escape(str(rec.get("completed_at", "")))
+                    st.markdown(
+                        f"<div style='font-size:0.82rem; line-height:1.5; margin-bottom:0.6rem;'>"
+                        f"💮 <b>{safe_topic}</b><br>"
+                        f"<span style='color:#64748B;'>🗓️ {safe_date}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.caption("아직 PASS한 단원이 없어요. 지금 도전해볼까?")
 
 
-tab1, tab2 = st.tabs(["🙋 질문 클리닉", "💮 오늘의 개념 PASS"])
+tab1, tab2, tab3 = st.tabs(["❓ 질문 클리닉", "🔍 오답 첨삭", "💮 개념 PASS"])
 with tab1:
-    render_clinic_tab()
+    render_question_clinic_tab()
 with tab2:
+    render_mistake_review_tab()
+with tab3:
     render_pass_tab()
