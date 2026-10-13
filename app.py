@@ -780,6 +780,74 @@ def load_system_prompt(student_grade):
 PASS_SUCCESS_TOKEN = "PASS_SUCCESS"
 
 
+def calculate_pass_streak(pass_records, today=None):
+    """PASS 기록에서 날짜만 뽑아 '현재 며칠 연속 PASS 중'인지 계산한다.
+
+    오늘 또는 어제 PASS 기록이 있어야 스트릭이 살아있다고 인정하고, 거기서부터
+    거꾸로 하루씩 비교하며 끊기는 지점까지 센다. 오늘/어제 둘 다 기록이 없으면 0.
+    """
+    kst = timezone(timedelta(hours=9))
+    today = today or datetime.now(kst).date()
+
+    dates = set()
+    for rec in pass_records or []:
+        raw = str(rec.get("completed_at", ""))[:10]
+        try:
+            dates.add(datetime.strptime(raw, "%Y-%m-%d").date())
+        except ValueError:
+            continue
+
+    if today in dates:
+        cursor = today
+    elif (today - timedelta(days=1)) in dates:
+        cursor = today - timedelta(days=1)
+    else:
+        return 0
+
+    streak = 0
+    while cursor in dates:
+        streak += 1
+        cursor -= timedelta(days=1)
+    return streak
+
+
+def get_stamp_board_state(total_pass_count):
+    """총 PASS 개수로 '몇 번째 10칸 스탬프판'이 지금 채워지고 있는지 계산한다.
+
+    10개를 채우면 그 판은 완성(10/10)으로 유지되고, 11번째 PASS부터 다음 판이
+    1칸부터 새로 시작된다. (예: 10개 → 1번판 10/10, 11개 → 2번판 1/10)
+    """
+    if total_pass_count <= 0:
+        return 1, 0
+    board_number = (total_pass_count - 1) // 10 + 1
+    filled = total_pass_count - (board_number - 1) * 10
+    return board_number, filled
+
+
+def render_stamp_board(pass_records):
+    """지금까지 받은 PASS 개수를 10칸짜리 디지털 스탬프 쿠폰판으로 시각화한다."""
+    total = len(pass_records or [])
+    board_number, filled = get_stamp_board_state(total)
+
+    st.markdown(f"##### 🎟️ 나의 PASS 스탬프 쿠폰판 ({board_number}번째 판 · {filled}/10)")
+    cols = st.columns(10)
+    for i, col in enumerate(cols):
+        with col:
+            if i < filled:
+                st.markdown(
+                    "<div style='text-align:center; font-size:1.9rem; line-height:1;'>💮</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    "<div style='text-align:center; font-size:1.9rem; line-height:1; color:#CBD5E1;'>⚪</div>",
+                    unsafe_allow_html=True,
+                )
+
+    if filled >= 10:
+        st.success("🎉 축하합니다! 10개 달성! 다혜쌤에게 보여주고 선물을 받으세요 🎁")
+
+
 def load_pass_system_prompt(student_grade):
     return (
         "너는 알찬학원의 '오늘의 개념 PASS' 테스트를 담당하는, 깐깐하지만 친절한 조교다.\n"
@@ -1138,6 +1206,29 @@ with cap_col2:
             st.session_state.pop(key, None)
         st.rerun()
 
+_pass_streak = calculate_pass_streak(st.session_state.pass_records)
+if _pass_streak > 0:
+    st.markdown(
+        f"""
+        <div style="
+            display: inline-block;
+            background: linear-gradient(135deg, #FF8A3D, #FF5A5F);
+            color: #FFFFFF;
+            font-weight: 800;
+            font-size: 1.05rem;
+            padding: 0.55rem 1.3rem;
+            border-radius: 999px;
+            box-shadow: 0 6px 16px rgba(255, 90, 95, 0.35);
+            margin-bottom: 1rem;
+        ">
+            🔥 현재 {_pass_streak}일 연속 PASS 중!
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+else:
+    st.caption("💤 아직 연속 기록이 없어요. 오늘 '💮 개념 PASS'에 도전해서 스트릭을 시작해보자!")
+
 MODEL_NAME = "claude-sonnet-4-5"
 
 
@@ -1445,6 +1536,9 @@ def render_clinic_tab():
 def render_pass_tab():
     st.markdown("### 💮 오늘의 개념 PASS")
     st.caption("오늘 배운 단원을 적고 도전해봐! 핵심 개념이나 오개념을 확인하는 질문을 던져줄게.")
+
+    render_stamp_board(st.session_state.pass_records)
+    st.markdown("---")
 
     pass_col_main, pass_col_history = st.columns([3, 1])
 
