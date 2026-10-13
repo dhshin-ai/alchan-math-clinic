@@ -7,6 +7,7 @@ import re
 import ast
 import requests
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from urllib.parse import quote
 import anthropic
 import streamlit as st
@@ -30,6 +31,17 @@ except Exception:
 # 이 프로젝트는 전부 Anthropic Claude(비전 포함) 하나로 통일되어 있다 - Gemini 등 다른
 # 모델/SDK는 쓰지 않는다. 사진 분석(질문 클리닉/오답 첨삭/칠판 판서 추출) 전부 이 모델을 쓴다.
 MODEL_NAME = "claude-sonnet-4-5"
+
+# Streamlit Cloud 서버 시간이 UTC일 수 있으므로, 날짜/요일 표시는 항상 zoneinfo로
+# 'Asia/Seoul' 기준 시각을 명시적으로 가져온다 (고정 오프셋이 아니라 이름 있는 시간대).
+KST = ZoneInfo("Asia/Seoul")
+WEEKDAY_KO = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
+
+
+def get_today_kst_label():
+    """'2026년 10월 13일 화요일'처럼 한국 시간 기준 오늘 날짜+요일 문자열을 만든다."""
+    now = datetime.now(KST)
+    return f"{now.year}년 {now.month}월 {now.day}일 {WEEKDAY_KO[now.weekday()]}"
 
 try:
     MASTER_PW = st.secrets["STUDENT_CODE"]
@@ -689,6 +701,31 @@ def inject_custom_css():
     .handwritten-note blockquote li {
         font-family: 'Gowun Dodum', 'Pretendard', sans-serif !important;
         color: #4A3F2E !important;
+    }
+
+    /* ==========================================
+       📅 개념 PASS 탭 상단 - 오늘 날짜/요일 배너
+       ========================================== */
+    .pass-date-banner {
+        background: linear-gradient(135deg, #3A449A, #00A19D);
+        border-radius: 16px;
+        padding: 0.9rem 1.3rem;
+        margin-bottom: 1rem;
+        text-align: center;
+        box-shadow: 0 6px 16px rgba(58, 68, 154, 0.25);
+    }
+
+    .pass-date-banner .pass-date-text {
+        color: #FFFFFF;
+        font-weight: 800;
+        font-size: 1.25rem;
+        letter-spacing: 0.01em;
+    }
+
+    @media (max-width: 480px) {
+        .pass-date-banner .pass-date-text {
+            font-size: 1.05rem;
+        }
     }
 
     /* ==========================================
@@ -1772,6 +1809,13 @@ def render_pass_tab():
         return
 
     st.caption("선생님이 오늘 정해준 범위 안에서, 핵심 개념이나 오개념을 확인하는 질문을 던져줄게.")
+
+    st.markdown(
+        f'<div class="pass-date-banner">'
+        f'<span class="pass-date-text">📅 {get_today_kst_label()} - 오늘의 개념 미션</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
 
     render_stamp_board(st.session_state.pass_records)
     st.markdown("---")
