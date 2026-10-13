@@ -1,5 +1,6 @@
 import base64
 import html
+import io
 import json
 import os
 import re
@@ -12,6 +13,7 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 st.set_page_config(
     page_title="알찬학원 신다혜 쌤의 1:1 수학 클리닉",
@@ -33,6 +35,7 @@ except Exception:
 KAKAO_CLIENT_ID = st.secrets.get("KAKAO_CLIENT_ID", "")
 KAKAO_REDIRECT_URI = st.secrets.get("KAKAO_REDIRECT_URI", "https://math.studyground123.com/")
 STUDENT_DATA_DIR = "student_data"
+TEACHER_DASHBOARD_PASSWORD = st.secrets.get("TEACHER_DASHBOARD_PASSWORD", "dahe1234")
 
 
 def get_kakao_login_url():
@@ -128,6 +131,8 @@ def load_student_data(kakao_id):
         data.setdefault("pass_topic", None)
         data.setdefault("pass_completed", False)
         data.setdefault("pass_records", [])
+        data.setdefault("pass_concept_summary", "")
+        data.setdefault("pass_completed_date", "")
         return data
     except (FileNotFoundError, json.JSONDecodeError):
         return None
@@ -136,6 +141,7 @@ def load_student_data(kakao_id):
 def save_student_data(
     kakao_id, nickname, student_grade, selected_mode, messages,
     pass_topic=None, pass_messages=None, pass_completed=False, pass_records=None,
+    pass_concept_summary="", pass_completed_date="",
 ):
     """새로고침/재접속 후에도 대화 기록·PASS 진행 상황·PASS 기록이 이어지도록 학생별 파일로 저장한다."""
     data = {
@@ -148,6 +154,8 @@ def save_student_data(
         "pass_messages": _serialize_messages(pass_messages or []),
         "pass_completed": pass_completed,
         "pass_records": pass_records or [],
+        "pass_concept_summary": pass_concept_summary,
+        "pass_completed_date": pass_completed_date,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
@@ -170,7 +178,80 @@ def persist_current_student():
             pass_messages=st.session_state.get("pass_messages", []),
             pass_completed=st.session_state.get("pass_completed", False),
             pass_records=st.session_state.get("pass_records", []),
+            pass_concept_summary=st.session_state.get("pass_concept_summary", ""),
+            pass_completed_date=st.session_state.get("pass_completed_date", ""),
         )
+
+
+def list_all_student_records():
+    """원장님 대시보드용: student_data/ 폴더의 모든 학생 기록을 최근 업데이트순으로 불러온다."""
+    records = []
+    if not os.path.isdir(STUDENT_DATA_DIR):
+        return records
+    for fname in sorted(os.listdir(STUDENT_DATA_DIR)):
+        if not fname.endswith(".json"):
+            continue
+        data = load_student_data(fname[:-5])
+        if data:
+            records.append(data)
+    records.sort(key=lambda d: d.get("updated_at", ""), reverse=True)
+    return records
+
+
+def render_teacher_dashboard():
+    """학생들에게는 보이지 않는, 비밀번호로만 들어오는 원장님 전용 대시보드."""
+    top_c1, top_c2 = st.columns([4, 1])
+    with top_c1:
+        st.subheader("👨‍🏫 원장님 대시보드")
+        st.caption("학생별 질문 클리닉 대화 내역(사진 포함)과 PASS 기록을 한눈에 확인하세요.")
+    with top_c2:
+        if st.button("🔒 종료", use_container_width=True, key="teacher_dashboard_exit"):
+            st.session_state.teacher_mode = False
+            st.session_state.pop("teacher_pw_input", None)
+            st.rerun()
+
+    st.markdown("---")
+
+    records = list_all_student_records()
+    if not records:
+        st.info("아직 저장된 학생 데이터가 없습니다.")
+        return
+
+    st.caption(f"총 {len(records)}명의 학생 데이터가 저장되어 있습니다.")
+
+    for data in records:
+        nickname = data.get("nickname", "익명 학생")
+        grade = data.get("student_grade", "-")
+        messages = data.get("messages", [])
+        pass_records = data.get("pass_records", [])
+        updated_at = data.get("updated_at", "")
+        q_count = len([m for m in messages if m.get("role") == "user"])
+
+        with st.expander(f"👤 {nickname} ({grade}) · 질문 {q_count}건 · PASS {len(pass_records)}건"):
+            st.caption(f"🆔 카카오 회원번호: {data.get('kakao_id', '-')} · 마지막 업데이트: {updated_at}")
+
+            st.markdown("##### 💮 PASS 받은 개념")
+            if pass_records:
+                for rec in pass_records:
+                    st.markdown(f"- **{rec.get('topic', '-')}** · {rec.get('completed_at', '-')}")
+            else:
+                st.caption("아직 PASS 기록이 없습니다.")
+
+            st.markdown("##### 🙋 질문 클리닉 대화 내역")
+            if messages:
+                for msg in messages:
+                    role_label = "👤 학생" if msg.get("role") == "user" else "🤖 AI"
+                    st.markdown(f"**{role_label}**")
+                    if msg.get("images"):
+                        cols = st.columns(len(msg["images"]))
+                        for col, img in zip(cols, msg["images"]):
+                            with col:
+                                st.image(img["bytes"], width=160)
+                    if msg.get("content"):
+                        st.write(msg["content"])
+                    st.markdown("---")
+            else:
+                st.caption("아직 질문 클리닉 대화 내역이 없습니다.")
 
 
 def send_telegram_alert(msg_type, content_preview):
@@ -310,9 +391,8 @@ def inject_custom_css():
         background-color: #F8FAFC;
     }
 
-    [data-testid="stSidebar"] {
-        display: none;
-    }
+    /* 사이드바는 완전히 숨기지 않고 기본 접힘(collapsed) 상태로만 둔다.
+       맨 아래 "선생님 모드" 비밀번호 입력칸이 여기 들어있다 (시크릿 원장님 대시보드 진입용). */
 
     h1, h2, h3 {
         color: #3A449A !important;
@@ -639,12 +719,204 @@ def load_pass_system_prompt(student_grade):
         "- 질문 문장 안에 답이나 핵심 키워드를 절대 미리 흘리지 마라.\n\n"
         "★ [2. 채점 원칙 - 가장 중요한 규칙]\n"
         "- 학생의 답변에 핵심 키워드가 빠졌거나 설명이 정확하지 않으면, 정답을 절대로 먼저 알려주지 말고 짧은 힌트만 주면서 다시 답해보라고 유도해라.\n"
-        f"- 학생의 답변이 개념을 정확히 꿰뚫고 있다고 판단될 때만, 반드시 답변의 맨 첫 줄에 '{PASS_SUCCESS_TOKEN}' 라는 단어를 단독으로 쓰고, 그다음 줄부터 이모지를 듬뿍 써서 아주 크고 신나게 칭찬하는 축하 메시지를 1~2줄 써라.\n"
+        "- 학생의 답변이 개념을 정확히 꿰뚫고 있다고 판단될 때만 통과시켜라. 통과 시 반드시 아래 3줄 형식을 정확히 지켜서 출력해라 (다른 설명 없이 이 형식 그대로):\n"
+        f"  1번째 줄: '{PASS_SUCCESS_TOKEN}' 이라는 단어 단독으로만\n"
+        "  2번째 줄: 'SUMMARY: ' 다음에 이 개념의 핵심을 15~30자 내외 한 문장으로 요약 (인증샷 카드에 그대로 노출됨)\n"
+        "  3번째 줄부터: 이모지를 듬뿍 써서 아주 크고 신나게 칭찬하는 축하 메시지 1~2줄\n"
         f"- 아직 통과시킬 수준이 아니라면 '{PASS_SUCCESS_TOKEN}'이라는 단어를 절대 쓰지 마라.\n\n"
         "★ [3. 말투]\n"
         "- 학생에게 친근하고 다정한 반말('~해보자', '~했니?', '~란다')을 사용해라.\n"
         "- 힌트를 줄 때도 깐깐하게 핵심만 짚어주되, 끝까지 응원하는 태도를 잃지 마라."
     )
+
+
+# ==========================================
+# 💮 PASS 인증샷(세로 포토카드) 생성
+# ==========================================
+FONT_DIR = "assets/fonts"
+
+
+def _pass_font(weight, size):
+    """굿노트 감성 카드에 쓸 한글 폰트. 번들 폰트가 없으면(배포 환경 이슈 등) 기본 폰트로 조용히 대체한다."""
+    path = os.path.join(FONT_DIR, f"Pretendard-{weight}.otf")
+    try:
+        return ImageFont.truetype(path, size)
+    except Exception:
+        return ImageFont.load_default()
+
+
+def _wrap_text(draw, text, font, max_width):
+    """공백 기준으로 줄바꿈하고, 공백 없이 긴 토큰은 글자 단위로 강제 개행한다."""
+    lines = []
+    current = ""
+    for word in text.split(" "):
+        trial = f"{current} {word}".strip()
+        if not current or draw.textlength(trial, font=font) <= max_width:
+            current = trial
+        else:
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+
+    final_lines = []
+    for line in lines:
+        if draw.textlength(line, font=font) <= max_width:
+            final_lines.append(line)
+            continue
+        buf = ""
+        for ch in line:
+            trial = buf + ch
+            if not buf or draw.textlength(trial, font=font) <= max_width:
+                buf = trial
+            else:
+                final_lines.append(buf)
+                buf = ch
+        if buf:
+            final_lines.append(buf)
+    return final_lines
+
+
+def _fit_text(draw, text, weight, max_width, max_lines, start_size, min_size=26):
+    """줄 수 제한 안에 들어올 때까지 폰트 크기를 줄여가며 줄바꿈한다."""
+    size = start_size
+    while size >= min_size:
+        font = _pass_font(weight, size)
+        lines = _wrap_text(draw, text, font, max_width)
+        if len(lines) <= max_lines:
+            return font, lines
+        size -= 4
+    font = _pass_font(weight, min_size)
+    return font, _wrap_text(draw, text, font, max_width)[:max_lines]
+
+
+def _draw_centered_lines(draw, lines, font, center_x, top_y, line_height, fill):
+    y = top_y
+    for line in lines:
+        w = draw.textlength(line, font=font)
+        draw.text((center_x - w / 2, y), line, font=font, fill=fill)
+        y += line_height
+    return y
+
+
+def _draw_pass_stamp(draw, img, center_x, center_y, diameter=260):
+    """빨간 원형 '도장' 스탬프를 그려서 회전시킨 뒤 카드에 합성한다. (이모지 글리프는 폰트가 지원하지 않아 직접 벡터로 그린다)"""
+    stamp_red = (196, 42, 42, 255)
+    size = diameter + 40
+    stamp = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    sdraw = ImageDraw.Draw(stamp)
+    c = size / 2
+    r_outer = diameter / 2
+    r_inner = r_outer - 14
+    sdraw.ellipse([c - r_outer, c - r_outer, c + r_outer, c + r_outer], outline=stamp_red, width=7)
+    sdraw.ellipse([c - r_inner, c - r_inner, c + r_inner, c + r_inner], outline=stamp_red, width=3)
+
+    f_pass = _pass_font("ExtraBold", int(diameter * 0.26))
+    f_hangul = _pass_font("Bold", int(diameter * 0.15))
+    pass_w = sdraw.textlength("PASS", font=f_pass)
+    sdraw.text((c - pass_w / 2, c - diameter * 0.22), "PASS", font=f_pass, fill=stamp_red)
+    hangul_w = sdraw.textlength("합격", font=f_hangul)
+    sdraw.text((c - hangul_w / 2, c + diameter * 0.04), "합격", font=f_hangul, fill=stamp_red)
+
+    stamp = stamp.rotate(-14, expand=True, resample=Image.BICUBIC)
+    img.paste(stamp, (int(center_x - stamp.width / 2), int(center_y - stamp.height / 2)), stamp)
+
+
+def generate_pass_card(nickname, topic, concept_summary, date_str):
+    """스마트폰 배경화면/인스타 스토리용 9:16 PASS 인증 카드를 생성해 PNG 바이트로 반환한다."""
+    W, H = 1080, 1920
+    bg_top = (235, 248, 246)      # 파스텔 민트
+    bg_bottom = (238, 234, 250)   # 파스텔 라벤더
+    grid_color = (214, 213, 231)
+    ink = (42, 42, 58)
+    muted = (110, 110, 130)
+    accent = (58, 68, 154)        # 브랜드 인디고
+    accent2 = (0, 161, 157)       # 브랜드 티얼
+
+    img = Image.new("RGB", (W, H), bg_top)
+    draw = ImageDraw.Draw(img)
+
+    # 세로 그라디언트 배경
+    for y in range(H):
+        t = y / H
+        draw.line(
+            [(0, y), (W, y)],
+            fill=tuple(int(bg_top[i] + (bg_bottom[i] - bg_top[i]) * t) for i in range(3)),
+        )
+
+    # 굿노트 감성 모눈종이 그리드
+    step = 54
+    for x in range(0, W + 1, step):
+        draw.line([(x, 0), (x, H)], fill=grid_color, width=1)
+    for y in range(0, H + 1, step):
+        draw.line([(0, y), (W, y)], fill=grid_color, width=1)
+
+    # 상단 헤더: 브랜드 라벨 + 닉네임 + 날짜
+    label_font = _pass_font("Bold", 34)
+    label = "오늘의 개념 PASS"
+    label_w = draw.textlength(label, font=label_font)
+    draw.text((W / 2 - label_w / 2, 92), label, font=label_font, fill=accent2)
+
+    name_text = f"{nickname} 님"
+    name_size = 66
+    while name_size > 32:
+        name_font = _pass_font("ExtraBold", name_size)
+        if draw.textlength(name_text, font=name_font) <= W - 140:
+            break
+        name_size -= 4
+    name_w = draw.textlength(name_text, font=name_font)
+    draw.text((W / 2 - name_w / 2, 148), name_text, font=name_font, fill=accent)
+
+    date_font = _pass_font("Medium", 32)
+    date_w = draw.textlength(date_str, font=date_font)
+    draw.text((W / 2 - date_w / 2, 232), date_str, font=date_font, fill=muted)
+
+    # 중앙 노트 카드 (살짝 그림자 + 흰 패널)
+    panel = [70, 320, W - 70, 1540]
+    shadow = [panel[0] + 10, panel[1] + 16, panel[2] + 10, panel[3] + 16]
+    draw.rounded_rectangle(shadow, radius=48, fill=(200, 203, 222))
+    draw.rounded_rectangle(panel, radius=48, fill=(255, 255, 255))
+
+    pad_x = 90
+    content_w = (panel[2] - panel[0]) - pad_x * 2
+    cx = (panel[0] + panel[2]) / 2
+    y = panel[1] + 70
+
+    tag_font = _pass_font("Bold", 30)
+    tag = "통과한 단원"
+    tag_w = draw.textlength(tag, font=tag_font)
+    draw.text((cx - tag_w / 2, y), tag, font=tag_font, fill=accent2)
+    y += 60
+
+    topic_font, topic_lines = _fit_text(draw, topic, "ExtraBold", content_w, max_lines=2, start_size=78)
+    y = _draw_centered_lines(draw, topic_lines, topic_font, cx, y, line_height=int(topic_font.size * 1.25), fill=accent)
+    y += 36
+
+    draw.line([(panel[0] + pad_x, y), (panel[2] - pad_x, y)], fill=(224, 226, 240), width=3)
+    y += 44
+
+    tag2 = "핵심 개념"
+    tag2_w = draw.textlength(tag2, font=tag_font)
+    draw.text((cx - tag2_w / 2, y), tag2, font=tag_font, fill=accent2)
+    y += 58
+
+    concept_font, concept_lines = _fit_text(
+        draw, concept_summary, "Medium", content_w, max_lines=6, start_size=44, min_size=28
+    )
+    _draw_centered_lines(draw, concept_lines, concept_font, cx, y, line_height=int(concept_font.size * 1.45), fill=ink)
+
+    # 하단부 도장 + 워터마크
+    _draw_pass_stamp(draw, img, center_x=W - 230, center_y=panel[3] - 40, diameter=260)
+
+    footer_font = _pass_font("Medium", 30)
+    footer = "알찬학원 신다혜 쌤의 수학 클리닉"
+    footer_w = draw.textlength(footer, font=footer_font)
+    draw.line([(W / 2 - 140, 1830), (W / 2 + 140, 1830)], fill=(200, 203, 222), width=2)
+    draw.text((W / 2 - footer_w / 2, 1856), footer, font=footer_font, fill=muted)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 if "authenticated" not in st.session_state:
@@ -673,8 +945,28 @@ if "pass_completed" not in st.session_state:
     st.session_state.pass_completed = False
 if "pass_records" not in st.session_state:
     st.session_state.pass_records = []
+if "pass_concept_summary" not in st.session_state:
+    st.session_state.pass_concept_summary = ""
+if "pass_completed_date" not in st.session_state:
+    st.session_state.pass_completed_date = ""
+if "teacher_mode" not in st.session_state:
+    st.session_state.teacher_mode = False
 
 st.title("✏️ 알찬학원 신다혜 쌤의 1:1 수학 클리닉")
+
+# ==========================================
+# 🕵️ 시크릿 원장님 모드 (사이드바 맨 아래, 학생 화면은 그대로 평범한 접힌 사이드바)
+# 비밀번호가 맞으면 학생 로그인 절차 없이 바로 대시보드로 진입한다.
+# ==========================================
+with st.sidebar:
+    st.markdown("<div style='height: 62vh;'></div>", unsafe_allow_html=True)
+    teacher_pw_input = st.text_input("선생님 모드", type="password", key="teacher_pw_input")
+    if teacher_pw_input and teacher_pw_input == TEACHER_DASHBOARD_PASSWORD:
+        st.session_state.teacher_mode = True
+
+if st.session_state.teacher_mode:
+    render_teacher_dashboard()
+    st.stop()
 
 # ==========================================
 # 🔐 카카오 로그인 콜백 처리
@@ -701,6 +993,9 @@ if not st.session_state.authenticated and "code" in st.query_params:
                 st.session_state.pass_messages = saved.get("pass_messages", [])
                 st.session_state.pass_completed = saved.get("pass_completed", False)
                 st.session_state.pass_records = saved.get("pass_records", [])
+                st.session_state.pass_concept_summary = saved.get("pass_concept_summary", "")
+                st.session_state.pass_completed_date = saved.get("pass_completed_date", "")
+                st.session_state.pop("pass_card_bytes", None)
                 st.session_state.authenticated = True
             else:
                 # 첫 로그인 → 과목 선택 한 번만 더 받는다 (이전 세션의 흔적이 섞이지 않게 초기화)
@@ -710,6 +1005,9 @@ if not st.session_state.authenticated and "code" in st.query_params:
                 st.session_state.pass_messages = []
                 st.session_state.pass_completed = False
                 st.session_state.pass_records = []
+                st.session_state.pass_concept_summary = ""
+                st.session_state.pass_completed_date = ""
+                st.session_state.pop("pass_card_bytes", None)
                 st.session_state.kakao_needs_grade = True
         except Exception as e:
             st.session_state.kakao_login_error = f"카카오 로그인에 실패했습니다: {e}"
@@ -765,6 +1063,7 @@ with cap_col2:
             "authenticated", "student_name", "kakao_id", "kakao_needs_grade",
             "selected_mode", "messages", "last_upload_key", "slack_thread_ts",
             "pass_topic", "pass_messages", "pass_completed", "pass_records",
+            "pass_concept_summary", "pass_completed_date", "pass_card_bytes",
         ]:
             st.session_state.pop(key, None)
         st.rerun()
@@ -1120,6 +1419,9 @@ def render_pass_tab():
                     st.session_state.pass_topic = None
                     st.session_state.pass_messages = []
                     st.session_state.pass_completed = False
+                    st.session_state.pass_concept_summary = ""
+                    st.session_state.pass_completed_date = ""
+                    st.session_state.pop("pass_card_bytes", None)
                     persist_current_student()
                     st.rerun()
 
@@ -1128,7 +1430,6 @@ def render_pass_tab():
                     st.markdown(msg["content"])
 
             if st.session_state.pass_completed:
-                st.balloons()
                 st.markdown(
                     """
                     <div style="
@@ -1148,6 +1449,25 @@ def render_pass_tab():
                     </div>
                     """,
                     unsafe_allow_html=True,
+                )
+
+                if not st.session_state.get("pass_card_bytes"):
+                    st.session_state.pass_card_bytes = generate_pass_card(
+                        nickname=st.session_state.student_name,
+                        topic=st.session_state.pass_topic,
+                        concept_summary=st.session_state.pass_concept_summary or st.session_state.pass_topic,
+                        date_str=st.session_state.pass_completed_date,
+                    )
+                st.image(st.session_state.pass_card_bytes, use_container_width=True)
+                st.success("저장해서 인스타에 인증하거나 배경화면으로 써보세요!")
+                safe_filename = re.sub(r"[^0-9A-Za-z가-힣_-]", "_", st.session_state.pass_topic)[:30]
+                st.download_button(
+                    "📥 PASS 인증샷 저장하기",
+                    data=st.session_state.pass_card_bytes,
+                    file_name=f"PASS_{safe_filename}.png",
+                    mime="image/png",
+                    use_container_width=True,
+                    key="pass_card_download_btn",
                 )
             else:
                 if pass_answer := st.chat_input("여기에 답변을 적어줘!", key="pass_chat_input"):
@@ -1172,13 +1492,25 @@ def render_pass_tab():
                                 bot_reply = get_response_text(response)
                                 passed = bot_reply.strip().startswith(PASS_SUCCESS_TOKEN)
                                 if passed:
-                                    bot_reply = bot_reply.strip()[len(PASS_SUCCESS_TOKEN):].strip(" :\n")
+                                    body = bot_reply.strip()[len(PASS_SUCCESS_TOKEN):].strip()
+                                    summary = ""
+                                    if body.upper().startswith("SUMMARY:"):
+                                        first_line, _, remainder = body.partition("\n")
+                                        summary = first_line.split(":", 1)[1].strip()
+                                        body = remainder.strip()
+                                    bot_reply = body or "완벽하게 통과했어! 정말 잘했어요! 🎉"
+
                                     st.session_state.pass_completed = True
+                                    st.session_state.pass_concept_summary = summary or st.session_state.pass_topic
                                     kst = timezone(timedelta(hours=9))
+                                    now_kst = datetime.now(kst)
+                                    st.session_state.pass_completed_date = now_kst.strftime("%Y.%m.%d")
                                     st.session_state.pass_records.append({
                                         "topic": st.session_state.pass_topic,
-                                        "completed_at": datetime.now(kst).strftime("%Y-%m-%d %H:%M"),
+                                        "completed_at": now_kst.strftime("%Y-%m-%d %H:%M"),
                                     })
+                                    st.session_state.pop("pass_card_bytes", None)
+                                    st.balloons()
                                 st.session_state.pass_messages.append({"role": "assistant", "content": bot_reply})
                                 persist_current_student()
                                 st.rerun()
