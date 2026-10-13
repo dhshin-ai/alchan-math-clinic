@@ -12,11 +12,6 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
 
-try:
-    from youtube_transcript_api import YouTubeTranscriptApi
-except ImportError:
-    YouTubeTranscriptApi = None
-
 st.set_page_config(
     page_title="알찬학원 신다혜 쌤의 1:1 수학 클리닉",
     page_icon="✏️",
@@ -33,8 +28,6 @@ try:
     MASTER_PW = st.secrets["STUDENT_CODE"]
 except Exception:
     MASTER_PW = "1234"
-
-ADMIN_PW = st.secrets.get("ADMIN_CODE", "admin")
 
 KAKAO_CLIENT_ID = st.secrets.get("KAKAO_CLIENT_ID", "")
 KAKAO_REDIRECT_URI = st.secrets.get("KAKAO_REDIRECT_URI", "https://math.studyground123.com/")
@@ -164,14 +157,6 @@ def persist_current_student():
         )
 
 
-def extract_youtube_id(url):
-    pattern = r'(?:v=|\/|vi=|\/v\/|shorts\/)([0-9A-Za-z_-]{11})'
-    match = re.search(pattern, url)
-    if match:
-        return match.group(1)
-    return None
-
-
 def send_telegram_alert(msg_type, content_preview):
     """학생 질문 제출 시 선생님 폰으로 실시간 텔레그램 알림을 쏜다.
 
@@ -224,7 +209,7 @@ def send_telegram_photo(photo_bytes, student_name="익명 학생", extra_info=""
         pass
 
 
-def log_to_slack_and_gsheet(student_name, student_grade, mode, student_text, ai_reply, is_sos=False, skip_telegram=False):
+def log_to_slack_and_gsheet(student_name, student_grade, mode, student_text, ai_reply, skip_telegram=False):
     slack_webhook_url = st.secrets.get("SLACK_WEBHOOK_URL", "")
     slack_bot_token = st.secrets.get("SLACK_BOT_TOKEN", "")
     slack_channel_id = st.secrets.get("SLACK_CHANNEL_ID", "")
@@ -233,35 +218,20 @@ def log_to_slack_and_gsheet(student_name, student_grade, mode, student_text, ai_
     # 사진 업로드 건은 send_telegram_photo가 이미 원본 사진 + 학생 이름을 텔레그램으로
     # 보냈으므로, 여기서 중복으로 텍스트 알림을 또 쏘지 않는다.
     if not skip_telegram:
-        send_telegram_alert(
-            "🚨 SOS" if is_sos else mode,
-            student_text if student_text else "(사진 업로드)",
-        )
+        send_telegram_alert(mode, student_text if student_text else "(사진 업로드)")
 
     kst = timezone(timedelta(hours=9))
     now_str = datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S")
 
     thread_ts = st.session_state.get("slack_thread_ts", None)
-    prefix = "🚨 *[SOS 다혜 쌤 직접 호출!]*" if is_sos else "🔔 *[알찬학원 수학 클리닉]*"
-
-    # 대화 이력 추출 (SOS 시 생략 없이 지금까지 주고받은 대화 통째로 슬랙에 전달)
-    chat_history_str = ""
-    if "messages" in st.session_state and st.session_state.messages:
-        history_lines = []
-        for msg in st.session_state.messages:
-            role_label = "👤 학생" if msg["role"] == "user" else "🤖 AI"
-            content_text = msg["content"] if isinstance(msg["content"], str) else "(사진 업로드)"
-            history_lines.append(f"{role_label}: {content_text}")
-        chat_history_str = "\n\n📜 *[지금까지 주고받은 대화 전체]*:\n" + "\n---\n".join(history_lines)
 
     slack_text = (
-        f"{prefix}\n"
+        f"🔔 *[알찬학원 수학 클리닉]*\n"
         f"• *학생*: {student_name} ({student_grade})\n"
         f"• *시각*: {now_str}\n"
         f"• *모드*: {mode}\n"
         f"• *최신 입력*: {student_text if student_text else '(사진 업로드)'}\n\n"
         f"🤖 *AI 마지막 답변*:\n{ai_reply}"
-        f"{chat_history_str if is_sos else ''}"
     )
 
     if slack_bot_token and slack_channel_id:
@@ -292,7 +262,7 @@ def log_to_slack_and_gsheet(student_name, student_grade, mode, student_text, ai_
         except Exception:
             pass
 
-    if gsheet_url and not is_sos:
+    if gsheet_url:
         try:
             gsheet_payload = {
                 "timestamp": now_str,
@@ -643,8 +613,6 @@ def load_system_prompt(student_grade):
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
-if "is_admin" not in st.session_state:
-    st.session_state.is_admin = False
 if "student_name" not in st.session_state:
     st.session_state.student_name = ""
 if "student_grade" not in st.session_state:
@@ -678,7 +646,6 @@ if not st.session_state.authenticated and "code" in st.query_params:
             kakao_id, nickname = exchange_kakao_code(auth_code)
             st.session_state.kakao_id = kakao_id
             st.session_state.student_name = nickname
-            st.session_state.is_admin = False
 
             saved = load_student_data(kakao_id)
             if saved and saved.get("student_grade"):
@@ -727,71 +694,6 @@ if not st.session_state.authenticated:
             st.link_button("💬 카카오로 로그인", get_kakao_login_url(), use_container_width=True, type="primary")
         else:
             st.warning("카카오 로그인이 아직 설정되지 않았습니다. 선생님에게 문의해 주세요.")
-
-        with st.expander("👑 선생님 관리자 로그인"):
-            admin_pw = st.text_input("관리자 비밀번호:", type="password", key="admin_pw_input")
-            if st.button("👑 관리자로 입장하기", use_container_width=True):
-                if admin_pw == ADMIN_PW:
-                    st.session_state.authenticated = True
-                    st.session_state.is_admin = True
-                    st.session_state.student_name = "신다혜 선생님 (관리자)"
-                    st.rerun()
-                else:
-                    st.error("비밀번호가 올바르지 않습니다.")
-    st.stop()
-
-if st.session_state.is_admin:
-    st.markdown("---")
-    st.subheader("👑 신다혜 선생님 전용 관리자 모드")
-    st.caption("학생들에게는 보이지 않는 관리자 화면입니다. 노하우 데이터를 관리하세요.")
-
-    tab1, tab2 = st.tabs(["🎬 유튜브 수업 대본 추출기", "📝 custom_notes.txt 직접 수정"])
-
-    with tab1:
-        st.markdown("#### 🎬 유튜브 수업 영상 대본 자동 등록")
-        yt_url = st.text_input("유튜브 영상 링크 (예: https://www.youtube.com/watch?v=...):")
-        yt_topic = st.text_input("단원/주제명 (예: 중3-2 원주각과 접현각 특강):")
-
-        if st.button("🚀 대본 추출 후 AI 학습 데이터로 추가", use_container_width=True):
-            video_id = extract_youtube_id(yt_url)
-            if not yt_url:
-                st.error("유튜브 링크를 입력해 주세요.")
-            elif not video_id:
-                st.error("유튜브 영상 ID를 올바르게 찾을 수 없습니다. 주소를 다시 확인해 주세요.")
-            elif YouTubeTranscriptApi is None:
-                st.error("youtube_transcript_api 라이브러리가 설치되지 않았습니다.")
-            else:
-                try:
-                    transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['ko', 'en'])
-                    script_text = "\n".join([item['text'] for item in transcript])
-                    note_content = f"\n\n[다혜 쌤 현장 강의 대본: {yt_topic}]\n{script_text}\n"
-
-                    with open("custom_notes.txt", "a", encoding="utf-8") as f:
-                        f.write(note_content)
-                    st.success(f"✅ '{yt_topic}' 대본이 AI 학습 데이터에 추가되었습니다! (영상 ID: {video_id})")
-                except Exception as e:
-                    st.error(f"대본 추출 실패: {e}\n\n💡 팁: 해당 유튜브 영상에 자막(또는 자동자막) 설정이 켜져 있는지 확인해 주세요!")
-
-    with tab2:
-        st.markdown("#### 📝 custom_notes.txt 노하우 데이터 직접 관리")
-        curr_notes = ""
-        try:
-            with open("custom_notes.txt", "r", encoding="utf-8") as f:
-                curr_notes = f.read()
-        except FileNotFoundError:
-            curr_notes = ""
-
-        updated_notes = st.text_area("custom_notes.txt 내용", value=curr_notes, height=300)
-        if st.button("💾 노하우 내용 저장하기", use_container_width=True):
-            with open("custom_notes.txt", "w", encoding="utf-8") as f:
-                f.write(updated_notes)
-            st.success("✅ 선생님 노하우 파일이 성공적으로 저장되었습니다!")
-
-    st.markdown("---")
-    if st.button("🔒 관리자 로그아웃 (학생 로그인 화면으로)", use_container_width=True):
-        st.session_state.authenticated = False
-        st.session_state.is_admin = False
-        st.rerun()
     st.stop()
 
 if "last_upload_key" not in st.session_state:
@@ -803,10 +705,10 @@ cap_col1, cap_col2 = st.columns([4, 1])
 with cap_col1:
     st.caption(f"👤 현재 접속 학생: **{st.session_state.student_name}** | 🎓 과목: **{st.session_state.student_grade}**")
 with cap_col2:
-    if not st.session_state.is_admin and st.button("🔓 로그아웃", use_container_width=True):
+    if st.button("🔓 로그아웃", use_container_width=True):
         persist_current_student()
         for key in [
-            "authenticated", "is_admin", "student_name", "kakao_id", "kakao_needs_grade",
+            "authenticated", "student_name", "kakao_id", "kakao_needs_grade",
             "selected_mode", "messages", "last_upload_key", "slack_thread_ts",
         ]:
             st.session_state.pop(key, None)
@@ -817,7 +719,7 @@ if st.session_state.selected_mode is None:
         """
     <div class="guide-box">
         <div class="guide-title">💡 클리닉 이용 안내</div>
-        <div class="guide-item">📢 <b>공지사항:</b> AI 조교가 다혜 쌤의 특허 풀이를 열심히 배우는 중이라 도형이나 고난도 문제는 가끔 어리바리할 수 있어! 힌트가 이상하거나 막히면 망설이지 말고 [🆘 다혜 쌤 SOS] 버튼을 눌러줘!</div>
+        <div class="guide-item">📢 <b>공지사항:</b> AI 조교가 다혜 쌤의 특허 풀이를 열심히 배우는 중이라 도형이나 고난도 문제는 가끔 어리바리할 수 있어! 힌트가 이상하거나 막히면 "🔓 80% 풀이 바로 보기" 버튼을 눌러봐!</div>
         <div class="guide-item">❓ <b>풀이가 막혔어요:</b> 문제 사진 1장을 올리면, 정답 대신 스스로 답을 찾아갈 수 있게 질문을 던져줍니다.</div>
         <div class="guide-item">✍️ <b>내 풀이 검토:</b> 사진 1장 또는 2장을 올리면 연습장 손글씨 풀이의 연산 실수를 콕 짚어줍니다.</div>
     </div>
@@ -1028,22 +930,6 @@ for msg in st.session_state.messages:
                 st.caption(msg["content"])
         else:
             st.markdown(msg["content"])
-
-st.markdown("---")
-sos_col1, sos_col2 = st.columns([3, 1])
-with sos_col1:
-    st.caption("💡 AI 힌트가 이상하거나 보조선 도움이 필요하신가요?")
-with sos_col2:
-    if st.button("🆘 다혜 쌤 SOS 요청하기", use_container_width=True):
-        log_to_slack_and_gsheet(
-            st.session_state.student_name,
-            st.session_state.student_grade,
-            mode,
-            "학생이 직접 [🆘 다혜 쌤 SOS] 버튼 클릭!",
-            "다혜 쌤의 직접 한 줄 힌트가 필요합니다.",
-            is_sos=True
-        )
-        st.success("🚨 다혜 쌤에게 실시간 SOS가 전달되었습니다! 잠시만 기다려주세요.")
 
 # ==========================================
 # 🆘 학생 구출용 퀵 액션 버튼 (AI가 답변한 직후에만 노출)
