@@ -656,6 +656,115 @@ def inject_custom_css():
         font-family: 'Gowun Dodum', 'Pretendard', sans-serif !important;
         color: #4A3F2E !important;
     }
+
+    /* ==========================================
+       🎮 듀오링고 스타일 PASS 스탬프 쿠폰판
+       ========================================== */
+    .stamp-board {
+        background: linear-gradient(180deg, #FFFDF5, #FFF8E1);
+        border: 1px solid #FFE9A8;
+        border-radius: 22px;
+        padding: 1.3rem 1.4rem 1.6rem;
+        margin: 0.6rem 0 1.3rem 0;
+        box-shadow: 0 10px 24px rgba(255, 193, 7, 0.16);
+    }
+
+    .stamp-board-title {
+        font-weight: 800;
+        font-size: 1.05rem;
+        color: #3A449A;
+        margin-bottom: 0.8rem;
+    }
+
+    .stamp-progress-track {
+        width: 100%;
+        height: 16px;
+        background: #F1EADA;
+        border-radius: 999px;
+        overflow: hidden;
+        box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
+        margin-bottom: 0.6rem;
+    }
+
+    .stamp-progress-fill {
+        height: 100%;
+        background: linear-gradient(90deg, #FFC800, #FF9F1C);
+        border-radius: 999px;
+        transition: width 0.5s ease;
+    }
+
+    .stamp-motivation {
+        font-family: 'Gowun Dodum', 'Pretendard', sans-serif !important;
+        font-size: 1.08rem;
+        color: #8A5A00;
+        font-weight: 700;
+        margin-bottom: 1.1rem;
+    }
+
+    .stamp-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: center;
+        gap: 12px;
+        row-gap: 20px;
+    }
+
+    .stamp-cell {
+        width: 52px;
+        height: 52px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.5rem;
+        flex-shrink: 0;
+    }
+
+    .stamp-cell.earned {
+        background: radial-gradient(circle at 32% 28%, #FFEA8A, #FFC800 70%);
+        box-shadow: 0 4px 0 #E2A500, 0 8px 16px rgba(255, 180, 0, 0.45);
+        transform: translateY(-4px);
+    }
+
+    .stamp-cell.locked {
+        background: #E5E5E5;
+        color: #ADADAD;
+        box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+
+    .stamp-cell.reward {
+        width: 80px;
+        height: 80px;
+        font-size: 2.4rem;
+    }
+
+    .stamp-cell.reward.earned {
+        background: radial-gradient(circle at 32% 28%, #FFF1B0, #FFC800 65%);
+        box-shadow: 0 5px 0 #E2A500, 0 12px 22px rgba(255, 180, 0, 0.5);
+    }
+
+    .stamp-cell.reward.locked {
+        background: #EDEDED;
+        box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.12);
+    }
+
+    @media (max-width: 480px) {
+        .stamp-cell {
+            width: 42px;
+            height: 42px;
+            font-size: 1.25rem;
+        }
+        .stamp-cell.reward {
+            width: 64px;
+            height: 64px;
+            font-size: 1.9rem;
+        }
+        .stamp-row {
+            gap: 8px;
+            row-gap: 16px;
+        }
+    }
     </style>
     """,
         unsafe_allow_html=True,
@@ -873,27 +982,44 @@ def get_stamp_board_state(total_pass_count):
 
 
 def render_stamp_board(pass_records):
-    """지금까지 받은 PASS 개수를 10칸짜리 디지털 스탬프 쿠폰판으로 시각화한다."""
+    """지금까지 받은 PASS 개수를 듀오링고 스타일의 10칸 디지털 스탬프 쿠폰판으로 시각화한다.
+
+    st.columns 대신 CSS flexbox 기반 커스텀 컴포넌트(.stamp-board)를 한 번의 st.markdown
+    호출로 그려서, 모바일/태블릿에서도 10칸이 찌그러지지 않고 자동 줄바꿈되게 한다.
+    """
     total = len(pass_records or [])
     board_number, filled = get_stamp_board_state(total)
-
-    st.markdown(f"##### 🎟️ 나의 PASS 스탬프 쿠폰판 ({board_number}번째 판 · {filled}/10)")
-    cols = st.columns(10)
-    for i, col in enumerate(cols):
-        with col:
-            if i < filled:
-                st.markdown(
-                    "<div style='text-align:center; font-size:1.9rem; line-height:1;'>💮</div>",
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.markdown(
-                    "<div style='text-align:center; font-size:1.9rem; line-height:1; color:#CBD5E1;'>⚪</div>",
-                    unsafe_allow_html=True,
-                )
+    progress_pct = int(filled / 10 * 100)
+    remaining = max(0, 10 - filled)
 
     if filled >= 10:
-        st.success("🎉 축하합니다! 10개 달성! 다혜쌤에게 보여주고 선물을 받으세요 🎁")
+        motivation = "🎉 10개 달성! 다혜쌤에게 보여주고 선물을 받아보세요!"
+    else:
+        motivation = f"다음 보상까지 {remaining}개 남았어요! 화이팅! 🔥"
+
+    cells = []
+    for i in range(10):
+        earned = i < filled
+        is_reward = i == 9
+        classes = "stamp-cell"
+        if is_reward:
+            classes += " reward"
+        classes += " earned" if earned else " locked"
+        if is_reward:
+            icon = "🎁" if earned else "🏆"
+        else:
+            icon = "⭐" if earned else "🔒"
+        cells.append(f'<div class="{classes}">{icon}</div>')
+
+    st.markdown(
+        f"""<div class="stamp-board">
+            <div class="stamp-board-title">🎟️ 나의 PASS 스탬프 쿠폰판 · {board_number}번째 판 ({filled}/10)</div>
+            <div class="stamp-progress-track"><div class="stamp-progress-fill" style="width:{progress_pct}%;"></div></div>
+            <div class="stamp-motivation">{motivation}</div>
+            <div class="stamp-row">{''.join(cells)}</div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
 
 
 def load_pass_system_prompt(pass_grade, scope_text):
