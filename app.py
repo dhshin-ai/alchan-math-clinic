@@ -1,8 +1,11 @@
 import base64
+import json
+import os
 import re
 import ast
 import requests
 from datetime import datetime, timezone, timedelta
+from urllib.parse import quote
 import anthropic
 import streamlit as st
 import matplotlib.pyplot as plt
@@ -32,6 +35,133 @@ except Exception:
     MASTER_PW = "1234"
 
 ADMIN_PW = st.secrets.get("ADMIN_CODE", "admin")
+
+KAKAO_CLIENT_ID = st.secrets.get("KAKAO_CLIENT_ID", "")
+KAKAO_REDIRECT_URI = st.secrets.get("KAKAO_REDIRECT_URI", "https://math.studyground123.com/")
+STUDENT_DATA_DIR = "student_data"
+
+
+def get_kakao_login_url():
+    """카카오 로그인 동의 화면으로 이동하는 인가 URL을 만든다."""
+    return (
+        "https://kauth.kakao.com/oauth/authorize"
+        f"?client_id={KAKAO_CLIENT_ID}"
+        f"&redirect_uri={quote(KAKAO_REDIRECT_URI, safe='')}"
+        "&response_type=code"
+    )
+
+
+def exchange_kakao_code(code):
+    """인가 코드를 액세스 토큰으로 교환한 뒤, 카카오 닉네임과 고유 회원번호를 가져온다."""
+    token_res = requests.post(
+        "https://kauth.kakao.com/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "client_id": KAKAO_CLIENT_ID,
+            "redirect_uri": KAKAO_REDIRECT_URI,
+            "code": code,
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded;charset=utf-8"},
+        timeout=5,
+    )
+    token_res.raise_for_status()
+    access_token = token_res.json()["access_token"]
+
+    user_res = requests.get(
+        "https://kapi.kakao.com/v2/user/me",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=5,
+    )
+    user_res.raise_for_status()
+    user_json = user_res.json()
+
+    kakao_id = str(user_json.get("id"))
+    account = user_json.get("kakao_account", {}) or {}
+    profile = account.get("profile", {}) or {}
+    nickname = (
+        profile.get("nickname")
+        or (user_json.get("properties") or {}).get("nickname")
+        or "익명 학생"
+    )
+    return kakao_id, nickname
+
+
+def _student_data_path(kakao_id):
+    os.makedirs(STUDENT_DATA_DIR, exist_ok=True)
+    safe_id = re.sub(r"[^0-9A-Za-z_-]", "_", str(kakao_id))
+    return os.path.join(STUDENT_DATA_DIR, f"{safe_id}.json")
+
+
+def _serialize_messages(messages):
+    """st.session_state.messages를 JSON으로 저장 가능한 형태로 변환한다 (이미지는 base64)."""
+    out = []
+    for msg in messages:
+        m = {"role": msg["role"], "content": msg["content"]}
+        if msg.get("api_text"):
+            m["api_text"] = msg["api_text"]
+        if msg.get("images"):
+            m["images"] = [
+                {"data": base64.b64encode(img["bytes"]).decode("utf-8"), "mime": img.get("mime", "image/jpeg")}
+                for img in msg["images"]
+            ]
+        out.append(m)
+    return out
+
+
+def _deserialize_messages(raw_messages):
+    """저장된 JSON을 다시 st.session_state.messages 형태(이미지는 bytes)로 복원한다."""
+    out = []
+    for msg in raw_messages:
+        m = {"role": msg["role"], "content": msg["content"]}
+        if msg.get("api_text"):
+            m["api_text"] = msg["api_text"]
+        if msg.get("images"):
+            m["images"] = [
+                {"bytes": base64.b64decode(img["data"]), "mime": img.get("mime", "image/jpeg")}
+                for img in msg["images"]
+            ]
+        out.append(m)
+    return out
+
+
+def load_student_data(kakao_id):
+    """카카오 고유 회원번호로 저장된 학생의 과목/모드/대화 기록을 불러온다."""
+    try:
+        with open(_student_data_path(kakao_id), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data["messages"] = _deserialize_messages(data.get("messages", []))
+        return data
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def save_student_data(kakao_id, nickname, student_grade, selected_mode, messages):
+    """새로고침/재접속 후에도 대화 기록이 이어지도록 학생별 파일로 저장한다."""
+    data = {
+        "kakao_id": kakao_id,
+        "nickname": nickname,
+        "student_grade": student_grade,
+        "selected_mode": selected_mode,
+        "messages": _serialize_messages(messages),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        with open(_student_data_path(kakao_id), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def persist_current_student():
+    """현재 세션(학년/모드/대화 기록)을 로그인한 카카오 회원번호 파일에 저장한다."""
+    if st.session_state.get("kakao_id"):
+        save_student_data(
+            st.session_state.kakao_id,
+            st.session_state.student_name,
+            st.session_state.student_grade,
+            st.session_state.selected_mode,
+            st.session_state.messages,
+        )
 
 
 def extract_youtube_id(url):
@@ -521,39 +651,93 @@ if "student_grade" not in st.session_state:
     st.session_state.student_grade = "공통수학1"
 if "slack_thread_ts" not in st.session_state:
     st.session_state.slack_thread_ts = None
+if "kakao_id" not in st.session_state:
+    st.session_state.kakao_id = None
+if "kakao_needs_grade" not in st.session_state:
+    st.session_state.kakao_needs_grade = False
+if "kakao_login_error" not in st.session_state:
+    st.session_state.kakao_login_error = None
+if "selected_mode" not in st.session_state:
+    st.session_state.selected_mode = None
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
 st.title("✏️ 알찬학원 신다혜 쌤의 1:1 수학 클리닉")
 
+# ==========================================
+# 🔐 카카오 로그인 콜백 처리
+# (인가 코드(code) → 액세스 토큰 → 닉네임/고유 회원번호 조회)
+# ==========================================
+if not st.session_state.authenticated and "code" in st.query_params:
+    auth_code = st.query_params.get("code")
+    st.query_params.clear()
+    if not KAKAO_CLIENT_ID:
+        st.session_state.kakao_login_error = "카카오 로그인 설정(KAKAO_CLIENT_ID)이 비어 있습니다. 선생님에게 문의해 주세요."
+    else:
+        try:
+            kakao_id, nickname = exchange_kakao_code(auth_code)
+            st.session_state.kakao_id = kakao_id
+            st.session_state.student_name = nickname
+            st.session_state.is_admin = False
+
+            saved = load_student_data(kakao_id)
+            if saved and saved.get("student_grade"):
+                # 이미 과목을 선택해 둔 적이 있는 학생 → 대화 기록까지 그대로 복원하고 바로 입장
+                st.session_state.student_grade = saved["student_grade"]
+                st.session_state.selected_mode = saved.get("selected_mode")
+                st.session_state.messages = saved.get("messages", [])
+                st.session_state.authenticated = True
+            else:
+                # 첫 로그인 → 과목 선택 한 번만 더 받는다
+                st.session_state.kakao_needs_grade = True
+        except Exception as e:
+            st.session_state.kakao_login_error = f"카카오 로그인에 실패했습니다: {e}"
+    st.rerun()
+
+if not st.session_state.authenticated and "error" in st.query_params:
+    st.query_params.clear()
+    st.session_state.kakao_login_error = "카카오 로그인이 취소되었습니다."
+    st.rerun()
+
 if not st.session_state.authenticated:
     st.markdown("---")
-    st.subheader("👋 수강생 입장하기")
-    st.caption("학생 본인의 이름과 2022 개정 교육과정에 맞춘 과목을 선택해 주세요. (비밀번호 없이 바로 입장!)")
 
-    input_name = st.text_input("학생 이름 (예: 김철수):")
-    input_grade = st.selectbox(
-        "학년 / 과목 선택 (2022 개정 교육과정):",
-        ["중2", "중3", "공통수학1", "공통수학2", "대수", "미적분1", "미적분2", "확률과 통계", "기하와 벡터"]
-    )
-    with st.expander("👑 선생님 관리자 로그인"):
-        admin_pw = st.text_input("관리자 비밀번호:", type="password", key="admin_pw_input")
+    if st.session_state.kakao_login_error:
+        st.error(st.session_state.kakao_login_error)
+        st.session_state.kakao_login_error = None
 
-    if st.button("🚀 클리닉 입장하기", use_container_width=True):
-        clean_name = input_name.strip()
-        if st.session_state.get("admin_pw_input", "") == ADMIN_PW:
-            st.session_state.authenticated = True
-            st.session_state.is_admin = True
-            st.session_state.student_name = "신다혜 선생님 (관리자)"
-            st.success("👑 선생님 관리자 모드로 접속했습니다!")
-            st.rerun()
-        elif not clean_name:
-            st.error("이름을 입력해 주세요!")
-        else:
-            st.session_state.authenticated = True
-            st.session_state.is_admin = False
-            st.session_state.student_name = clean_name
+    if st.session_state.kakao_needs_grade:
+        st.subheader(f"👋 {st.session_state.student_name} 님, 반가워요!")
+        st.caption("2022 개정 교육과정에 맞춘 과목을 선택하고 클리닉을 시작해 주세요. (최초 1회만 선택)")
+        input_grade = st.selectbox(
+            "학년 / 과목 선택 (2022 개정 교육과정):",
+            ["중2", "중3", "공통수학1", "공통수학2", "대수", "미적분1", "미적분2", "확률과 통계", "기하와 벡터"]
+        )
+        if st.button("🚀 클리닉 입장하기", use_container_width=True):
             st.session_state.student_grade = input_grade
-            st.success(f"{clean_name} 학생 ({input_grade}), 환영해! 공부를 시작해 볼까?")
+            st.session_state.authenticated = True
+            st.session_state.kakao_needs_grade = False
+            persist_current_student()
             st.rerun()
+    else:
+        st.subheader("👋 수강생 입장하기")
+        st.caption("카카오 계정으로 로그인하면 대화 기록이 안전하게 저장돼서, 다음에 또 이어서 질문할 수 있어요!")
+
+        if KAKAO_CLIENT_ID:
+            st.link_button("💬 카카오로 로그인", get_kakao_login_url(), use_container_width=True, type="primary")
+        else:
+            st.warning("카카오 로그인이 아직 설정되지 않았습니다. 선생님에게 문의해 주세요.")
+
+        with st.expander("👑 선생님 관리자 로그인"):
+            admin_pw = st.text_input("관리자 비밀번호:", type="password", key="admin_pw_input")
+            if st.button("👑 관리자로 입장하기", use_container_width=True):
+                if admin_pw == ADMIN_PW:
+                    st.session_state.authenticated = True
+                    st.session_state.is_admin = True
+                    st.session_state.student_name = "신다혜 선생님 (관리자)"
+                    st.rerun()
+                else:
+                    st.error("비밀번호가 올바르지 않습니다.")
     st.stop()
 
 if st.session_state.is_admin:
@@ -610,16 +794,23 @@ if st.session_state.is_admin:
         st.rerun()
     st.stop()
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "selected_mode" not in st.session_state:
-    st.session_state.selected_mode = None
 if "last_upload_key" not in st.session_state:
     st.session_state.last_upload_key = None
 
 system_prompt = load_system_prompt(st.session_state.student_grade)
 
-st.caption(f"👤 현재 접속 학생: **{st.session_state.student_name}** | 🎓 과목: **{st.session_state.student_grade}**")
+cap_col1, cap_col2 = st.columns([4, 1])
+with cap_col1:
+    st.caption(f"👤 현재 접속 학생: **{st.session_state.student_name}** | 🎓 과목: **{st.session_state.student_grade}**")
+with cap_col2:
+    if not st.session_state.is_admin and st.button("🔓 로그아웃", use_container_width=True):
+        persist_current_student()
+        for key in [
+            "authenticated", "is_admin", "student_name", "kakao_id", "kakao_needs_grade",
+            "selected_mode", "messages", "last_upload_key", "slack_thread_ts",
+        ]:
+            st.session_state.pop(key, None)
+        st.rerun()
 
 if st.session_state.selected_mode is None:
     st.markdown(
@@ -676,6 +867,7 @@ with top_col2:
         st.session_state.messages = []
         st.session_state.last_upload_key = None
         st.session_state.slack_thread_ts = None
+        persist_current_student()
         st.rerun()
 
 st.markdown("---")
@@ -718,6 +910,7 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
         p_bytes = uploaded_problem.getvalue()
         send_telegram_photo(p_bytes, st.session_state.student_name, mode)
 
+        api_text = f"[모드: 스스로 풀어보기 / 과목: {st.session_state.student_grade}] 먼저 1단계로 [과목 > 대단원 > 중단원 > 세부 대표유형명] 4단계로 세부 출제 유형을 밝히고, 인식한 조건이나 각도를 먼저 확인한 뒤 2단계 힌트 질문을 던져라."
         content_blocks = [
             {
                 "type": "image",
@@ -727,10 +920,7 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                     "data": base64.b64encode(p_bytes).decode("utf-8"),
                 },
             },
-            {
-                "type": "text",
-                "text": f"[모드: 스스로 풀어보기 / 과목: {st.session_state.student_grade}] 먼저 1단계로 [과목 > 대단원 > 중단원 > 세부 대표유형명] 4단계로 세부 출제 유형을 밝히고, 인식한 조건이나 각도를 먼저 확인한 뒤 2단계 힌트 질문을 던져라.",
-            },
+            {"type": "text", "text": api_text},
         ]
 
         with st.spinner("문제를 꼼꼼하게 살피는 중입니다..."):
@@ -742,10 +932,18 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                     messages=[{"role": "user", "content": content_blocks}],
                 )
                 bot_reply = get_response_text(response)
+                # 사진 제출 자체도 대화 기록에 남겨서 새로고침 후에도 사진 내역이 보이게 한다.
+                st.session_state.messages.append({
+                    "role": "user",
+                    "content": "📷 문제 사진을 올렸어요!",
+                    "images": [{"bytes": p_bytes, "mime": uploaded_problem.type}],
+                    "api_text": api_text,
+                })
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
                 log_to_slack_and_gsheet(st.session_state.student_name, st.session_state.student_grade, mode, "문제 사진 업로드 제출", bot_reply, skip_telegram=True)
+                persist_current_student()
                 st.rerun()
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
@@ -798,10 +996,23 @@ if api_key and (curr_upload_key != st.session_state.last_upload_key):
                     messages=[{"role": "user", "content": content_blocks}],
                 )
                 bot_reply = get_response_text(response)
+                images_submitted = [{"bytes": p_bytes, "mime": uploaded_problem.type}]
+                label = "📷 문제 사진을 올렸어요!"
+                if uploaded_solution:
+                    images_submitted.append({"bytes": s_bytes, "mime": uploaded_solution.type})
+                    label = "📷 문제 + 풀이 사진을 올렸어요!"
+                # 사진 제출 자체도 대화 기록에 남겨서 새로고침 후에도 사진 내역이 보이게 한다.
+                st.session_state.messages.append({
+                    "role": "user",
+                    "content": label,
+                    "images": images_submitted,
+                    "api_text": prompt_guide,
+                })
                 st.session_state.messages.append(
                     {"role": "assistant", "content": bot_reply}
                 )
                 log_to_slack_and_gsheet(st.session_state.student_name, st.session_state.student_grade, mode, "풀이 검토 사진 제출", bot_reply, skip_telegram=True)
+                persist_current_student()
                 st.rerun()
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
@@ -810,8 +1021,9 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if msg["role"] == "assistant":
             render_assistant_content(msg["content"])
-        elif msg.get("image_bytes"):
-            st.image(msg["image_bytes"], caption="✍️ 연습장 필기 답변", width=320)
+        elif msg.get("images"):
+            for img in msg["images"]:
+                st.image(img["bytes"], width=320)
             if msg["content"]:
                 st.caption(msg["content"])
         else:
@@ -872,52 +1084,26 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
         st.stop()
 
     client = anthropic.Anthropic(api_key=api_key)
+
+    # 대화 기록(저장/복원된 기록 포함)을 그대로 API 메시지로 변환한다.
+    # 사진이 달린 턴은 최초 업로드 위젯이 아니라 messages에 저장해 둔
+    # 이미지/지시문을 사용하므로, 새로고침 후 복원된 세션에서도 동일하게 동작한다.
     api_messages = []
-
-    # 최초 문제/풀이 이미지를 첫 user 턴으로 복원
-    first_blocks = []
-    if uploaded_problem is not None:
-        uploaded_problem.seek(0)
-        first_blocks.append({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": uploaded_problem.type,
-                "data": base64.b64encode(uploaded_problem.read()).decode("utf-8"),
-            },
-        })
-    if mode == "✍️ 내 풀이 검토 (문제 + 연습장)" and uploaded_solution is not None:
-        uploaded_solution.seek(0)
-        first_blocks.append({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": uploaded_solution.type,
-                "data": base64.b64encode(uploaded_solution.read()).decode("utf-8"),
-            },
-        })
-    first_blocks.append({
-        "type": "text",
-        "text": f"[과목: {st.session_state.student_grade} / 모드: {mode}] 위 문제 사진(및 풀이)을 보고 규칙에 따라 지도해줘.",
-    })
-    api_messages.append({"role": "user", "content": first_blocks})
-
     for msg in st.session_state.messages:
-        if msg.get("image_bytes"):
-            api_messages.append({
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/jpeg",
-                            "data": base64.b64encode(msg["image_bytes"]).decode("utf-8"),
-                        },
+        if msg.get("images"):
+            blocks = [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": img.get("mime", "image/jpeg"),
+                        "data": base64.b64encode(img["bytes"]).decode("utf-8"),
                     },
-                    {"type": "text", "text": msg["content"]},
-                ],
-            })
+                }
+                for img in msg["images"]
+            ]
+            blocks.append({"type": "text", "text": msg.get("api_text") or msg["content"]})
+            api_messages.append({"role": msg["role"], "content": blocks})
         else:
             api_messages.append({"role": msg["role"], "content": msg["content"]})
 
@@ -938,6 +1124,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                     st.session_state.student_name, st.session_state.student_grade, mode,
                     last_student_text, bot_reply,
                 )
+                persist_current_student()
                 st.rerun()
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
