@@ -39,6 +39,7 @@ TEACHER_DASHBOARD_PASSWORD = st.secrets.get("TEACHER_DASHBOARD_PASSWORD", "dahye
 
 PASS_GRADE_LEVELS = ["중1", "중2", "중3", "고1", "고2", "고3"]
 DAILY_PASS_SCOPE_FILE = "daily_pass_scope.json"
+MODE_OPTIONS = ["❓ 질문 클리닉", "🔍 오답 첨삭", "💮 개념 PASS"]
 
 
 def load_daily_pass_scope():
@@ -61,14 +62,22 @@ def save_daily_pass_scope(scope_by_grade):
         pass
 
 
-def get_kakao_login_url():
-    """카카오 로그인 동의 화면으로 이동하는 인가 URL을 만든다."""
-    return (
+def get_kakao_login_url(state=None):
+    """카카오 로그인 동의 화면으로 이동하는 인가 URL을 만든다.
+
+    state에 현재 선택된 모드(selected_mode)를 실어 보내면, 카카오가 리다이렉트로
+    그대로 돌려주는 state 파라미터를 통해 로그인 후에도 원래 보고 있던 모드로
+    복귀할 수 있다 (세션 상태가 리다이렉트 왕복 중 끊겨도 안전하게 동작).
+    """
+    url = (
         "https://kauth.kakao.com/oauth/authorize"
         f"?client_id={KAKAO_CLIENT_ID}"
         f"&redirect_uri={quote(KAKAO_REDIRECT_URI, safe='')}"
         "&response_type=code"
     )
+    if state:
+        url += f"&state={quote(state, safe='')}"
+    return url
 
 
 def exchange_kakao_code(code):
@@ -249,6 +258,60 @@ def render_teacher_dashboard():
 
     st.markdown("#### 📌 학년별 오늘의 개념 범위 설정")
     st.caption("여기에 입력한 범위가 학생들의 '개념 PASS' 탭에 그대로 노출되고, AI 구술 질문도 이 범위 안에서만 나갑니다.")
+
+    st.markdown("##### 📸 칠판 판서 사진으로 자동 추출 (선택)")
+    st.caption("수업 후 칠판 사진을 올리면 AI가 핵심 개념을 요약해서 아래 해당 학년 텍스트 칸에 채워줘요. 저장 전에 한 번 확인해 주세요!")
+    board_col1, board_col2 = st.columns([1, 2])
+    with board_col1:
+        board_grade = st.selectbox("어느 학년 칠판 사진인가요?", PASS_GRADE_LEVELS, key="board_photo_grade")
+    with board_col2:
+        board_photo = st.file_uploader(
+            "📸 오늘 칠판 판서 사진 올리기", type=["jpg", "jpeg", "png"], key="board_photo_upload"
+        )
+
+    if st.button("🔍 AI로 핵심 개념 추출하기", key="extract_board_btn", disabled=not board_photo):
+        if not api_key:
+            st.error("API 키가 설정되지 않았습니다.")
+        else:
+            client = anthropic.Anthropic(api_key=api_key)
+            photo_bytes = board_photo.getvalue()
+            with st.spinner("칠판 판서를 분석하는 중..."):
+                try:
+                    response = client.messages.create(
+                        model=MODEL_NAME,
+                        max_tokens=400,
+                        messages=[{
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": board_photo.type,
+                                        "data": base64.b64encode(photo_bytes).decode("utf-8"),
+                                    },
+                                },
+                                {
+                                    "type": "text",
+                                    "text": (
+                                        "이 칠판 판서 사진 속 핵심 수학 개념·공식·증명 포인트를 학생들의 "
+                                        "'오늘의 개념 PASS' 구술시험 범위로 쓸 수 있게 1~2문장으로 간결하게 "
+                                        "요약해라. 다른 설명 없이 요약 내용만 출력해라."
+                                    ),
+                                },
+                            ],
+                        }],
+                    )
+                    extracted = get_response_text(response)
+                    # 아래 scope_input_{grade} text_area가 생성되기 전에 세션 상태를 먼저
+                    # 채워 두면, 다음 렌더에서 그 값이 입력창의 현재 값으로 그대로 반영된다.
+                    st.session_state[f"scope_input_{board_grade}"] = extracted
+                    st.success(f"✅ {board_grade} 칠판 판서에서 핵심 개념을 추출했어요! 아래에서 확인하고 저장해 주세요.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"판서 분석 중 오류가 발생했습니다: {e}")
+
+    st.markdown("---")
 
     current_scope = load_daily_pass_scope()
     with st.form("daily_pass_scope_form"):
@@ -997,7 +1060,9 @@ def load_pass_system_prompt(pass_grade, scope_text):
         "- 위 지정 범위를 벗어난 다른 단원이나 개념은 절대 묻지 마라. 학생이 다른 단원 이야기를 꺼내도 지정 범위로 다시 데려와라.\n\n"
         "★ [1. 질문 던지기]\n"
         "- 위 지정 범위의 핵심 개념이나 자주 틀리는 오개념을 확인할 수 있는 질문을 오직 1개만 던져라.\n"
-        "- 질문 문장 안에 답이나 핵심 키워드를 절대 미리 흘리지 마라.\n\n"
+        "- 질문 문장 안에 답이나 핵심 키워드를 절대 미리 흘리지 마라.\n"
+        "- 가능하면 '오늘 선생님이 칠판에 적어주신 내용 중 ~에 대해 설명해 보세요' 같은 식으로, 오늘 수업에서 "
+        "직접 배운 내용을 짚어주는 듯한 말투로 출제해라.\n\n"
         "★ [2. 채점 원칙 - 가장 중요한 규칙]\n"
         "- 학생의 답변에 핵심 키워드가 빠졌거나 설명이 정확하지 않으면, 정답을 절대로 먼저 알려주지 말고 짧은 힌트만 주면서 다시 답해보라고 유도해라.\n"
         "- 학생의 답변이 개념을 정확히 꿰뚫고 있다고 판단될 때만 통과시켜라. 통과 시 반드시 아래 3줄 형식을 정확히 지켜서 출력해라 (다른 설명 없이 이 형식 그대로):\n"
@@ -1238,6 +1303,8 @@ if "pass_grade" not in st.session_state:
     st.session_state.pass_grade = ""
 if "teacher_mode" not in st.session_state:
     st.session_state.teacher_mode = False
+if "selected_mode" not in st.session_state:
+    st.session_state.selected_mode = MODE_OPTIONS[0]
 
 st.title("✏️ 알찬학원 신다혜 쌤의 1:1 수학 클리닉")
 
@@ -1275,7 +1342,13 @@ if st.session_state.teacher_mode:
 # ==========================================
 if not st.session_state.authenticated and "code" in st.query_params:
     auth_code = st.query_params.get("code")
+    returned_mode = st.query_params.get("state")
     st.query_params.clear()
+    # 카카오가 그대로 돌려준 state로 로그인 전에 보고 있던 모드를 복원한다.
+    # (st.tabs는 파이썬에서 활성 탭을 지정할 방법이 없어서, 모드 네비게이션을
+    # st.radio + selected_mode로 구현해야 리다이렉트 왕복 후에도 복귀가 가능하다)
+    if returned_mode in MODE_OPTIONS:
+        st.session_state.selected_mode = returned_mode
     if not KAKAO_CLIENT_ID:
         st.session_state.kakao_login_error = "카카오 로그인 설정(KAKAO_CLIENT_ID)이 비어 있습니다. 선생님에게 문의해 주세요."
     else:
@@ -1392,7 +1465,7 @@ def render_login_required_gate(feature_label):
         )
         if KAKAO_CLIENT_ID:
             st.markdown(
-                f'<a href="{get_kakao_login_url()}" class="kakao-login-btn">'
+                f'<a href="{get_kakao_login_url(state=st.session_state.selected_mode)}" class="kakao-login-btn">'
                 f'<span class="kakao-login-btn-icon">💬</span>카카오 로그인</a>',
                 unsafe_allow_html=True,
             )
@@ -1873,10 +1946,20 @@ def render_pass_tab():
                 st.caption("아직 PASS한 단원이 없어요. 지금 도전해볼까?")
 
 
-tab1, tab2, tab3 = st.tabs(["❓ 질문 클리닉", "🔍 오답 첨삭", "💮 개념 PASS"])
-with tab1:
+# st.tabs는 파이썬에서 활성 탭을 지정할 방법이 없어 카카오 로그인 리다이렉트 후
+# 항상 첫 탭으로 돌아가 버린다. st.radio는 selected_mode로 복원 가능하므로 이걸 쓴다.
+st.radio(
+    "모드 선택",
+    MODE_OPTIONS,
+    key="selected_mode",
+    horizontal=True,
+    label_visibility="collapsed",
+)
+st.markdown("---")
+
+if st.session_state.selected_mode == "❓ 질문 클리닉":
     render_question_clinic_tab()
-with tab2:
+elif st.session_state.selected_mode == "🔍 오답 첨삭":
     render_mistake_review_tab()
-with tab3:
+elif st.session_state.selected_mode == "💮 개념 PASS":
     render_pass_tab()
