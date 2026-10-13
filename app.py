@@ -35,7 +35,7 @@ except Exception:
 KAKAO_CLIENT_ID = st.secrets.get("KAKAO_CLIENT_ID", "")
 KAKAO_REDIRECT_URI = st.secrets.get("KAKAO_REDIRECT_URI", "https://math.studyground123.com/")
 STUDENT_DATA_DIR = "student_data"
-TEACHER_DASHBOARD_PASSWORD = st.secrets.get("TEACHER_DASHBOARD_PASSWORD", "dahe1234")
+TEACHER_DASHBOARD_PASSWORD = st.secrets.get("TEACHER_DASHBOARD_PASSWORD", "dahye1234")
 
 
 def get_kakao_login_url():
@@ -184,7 +184,7 @@ def persist_current_student():
 
 
 def list_all_student_records():
-    """원장님 대시보드용: student_data/ 폴더의 모든 학생 기록을 최근 업데이트순으로 불러온다."""
+    """선생님 대시보드용: student_data/ 폴더의 모든 학생 기록을 최근 업데이트순으로 불러온다."""
     records = []
     if not os.path.isdir(STUDENT_DATA_DIR):
         return records
@@ -199,10 +199,10 @@ def list_all_student_records():
 
 
 def render_teacher_dashboard():
-    """학생들에게는 보이지 않는, 비밀번호로만 들어오는 원장님 전용 대시보드."""
+    """학생들에게는 보이지 않는, 비밀번호로만 들어오는 선생님 전용 대시보드."""
     top_c1, top_c2 = st.columns([4, 1])
     with top_c1:
-        st.subheader("👨‍🏫 원장님 대시보드")
+        st.subheader("👨‍🏫 선생님 대시보드")
         st.caption("학생별 질문 클리닉 대화 내역(사진 포함)과 PASS 기록을 한눈에 확인하세요.")
     with top_c2:
         if st.button("🔒 종료", use_container_width=True, key="teacher_dashboard_exit"):
@@ -378,6 +378,7 @@ def inject_custom_css():
         """
     <style>
     @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+    @import url('https://fonts.googleapis.com/css2?family=Gowun+Dodum&display=swap');
 
     html, body, .stApp {
         font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -392,7 +393,7 @@ def inject_custom_css():
     }
 
     /* 사이드바는 완전히 숨기지 않고 기본 접힘(collapsed) 상태로만 둔다.
-       맨 아래 "선생님 모드" 비밀번호 입력칸이 여기 들어있다 (시크릿 원장님 대시보드 진입용). */
+       맨 아래 "선생님 모드" 비밀번호 입력칸이 여기 들어있다 (시크릿 선생님 대시보드 진입용). */
 
     h1, h2, h3 {
         color: #3A449A !important;
@@ -548,6 +549,65 @@ def inject_custom_css():
         max-width: 100% !important;
         height: auto !important;
     }
+
+    /* ==========================================
+       ✍️ 아이패드 판서/노트 감성 - AI 답변 박스
+       (질문 클리닉 말풍선 + 개념 PASS 피드백 공통 적용)
+       ========================================== */
+    .handwritten-note {
+        position: relative;
+        background-color: #FDFBF7;
+        background-image:
+            linear-gradient(#ECE6D6 1px, transparent 1px),
+            linear-gradient(90deg, #ECE6D6 1px, transparent 1px);
+        background-size: 26px 26px;
+        border: 1px solid #ECE4D0;
+        border-radius: 16px;
+        box-shadow: 0 8px 20px rgba(120, 104, 68, 0.14), 0 1px 3px rgba(120, 104, 68, 0.08);
+        padding: 1.1rem 1.4rem;
+        margin: 0.4rem 0 0.9rem 0;
+    }
+
+    .handwritten-note,
+    .handwritten-note p,
+    .handwritten-note li,
+    .handwritten-note span,
+    .handwritten-note em {
+        font-family: 'Gowun Dodum', 'Pretendard', sans-serif !important;
+        color: #4A3F2E !important;
+        font-size: 1.14rem !important;
+        line-height: 1.85 !important;
+        font-weight: 400 !important;
+    }
+
+    .handwritten-note strong {
+        font-family: 'Gowun Dodum', 'Pretendard', sans-serif !important;
+        color: #2E4A8F !important;
+        font-weight: 700 !important;
+    }
+
+    /* 수식(LaTeX/KaTeX)은 손글씨 폰트의 영향을 받지 않고 원래 수식 폰트를 유지해 기호가 깨지지 않게 한다 */
+    .handwritten-note .katex,
+    .handwritten-note .katex * {
+        font-family: KaTeX_Main, KaTeX_Math, "Times New Roman", serif !important;
+        color: #1E293B !important;
+    }
+
+    .handwritten-note .katex-display {
+        background-color: rgba(255, 255, 255, 0.55) !important;
+    }
+
+    /* AI 답변이 간혹 인용문(>) 형식을 쓸 때도 노트 배경과 어울리도록 보정 */
+    .handwritten-note blockquote {
+        background-color: rgba(255, 255, 255, 0.55) !important;
+        box-shadow: none !important;
+    }
+    .handwritten-note blockquote *,
+    .handwritten-note blockquote p,
+    .handwritten-note blockquote li {
+        font-family: 'Gowun Dodum', 'Pretendard', sans-serif !important;
+        color: #4A3F2E !important;
+    }
     </style>
     """,
         unsafe_allow_html=True,
@@ -650,6 +710,16 @@ def render_jsxgraph(js_code):
     components.html(html_content, height=325)
 
 
+def render_handwritten_note(markdown_text):
+    """AI 답변을 '아이패드 판서 노트' 감성 박스(.handwritten-note)로 감싸서 렌더링한다.
+
+    여는 태그와 닫는 태그를 반드시 같은 st.markdown() 호출 안에 넣어야 한다 - 서로 다른
+    호출로 나누면 각 호출이 독립된 DOM 블록이 되어 하나의 박스로 묶이지 않는다.
+    태그 바로 안쪽에 빈 줄을 둬야 내부 텍스트가 LaTeX 수식을 포함해 마크다운으로 정상 처리된다.
+    """
+    st.markdown(f'<div class="handwritten-note">\n\n{markdown_text}\n\n</div>', unsafe_allow_html=True)
+
+
 def render_assistant_content(content):
     # JS 코드 블록(```javascript 또는 ```js) 감지 및 JSXGraph 렌더링
     pattern = r"```(?:javascript|js)\s*(.*?)\s*```"
@@ -658,7 +728,7 @@ def render_assistant_content(content):
     for i, part in enumerate(parts):
         if i % 2 == 0:
             if part.strip():
-                st.markdown(part)
+                render_handwritten_note(part)
         else:
             js_code = part.strip()
             render_jsxgraph(js_code)
@@ -955,7 +1025,7 @@ if "teacher_mode" not in st.session_state:
 st.title("✏️ 알찬학원 신다혜 쌤의 1:1 수학 클리닉")
 
 # ==========================================
-# 🕵️ 시크릿 원장님 모드 (사이드바 맨 아래, 학생 화면은 그대로 평범한 접힌 사이드바)
+# 🕵️ 시크릿 선생님 모드 (사이드바 맨 아래, 학생 화면은 그대로 평범한 접힌 사이드바)
 # 비밀번호가 맞으면 학생 로그인 절차 없이 바로 대시보드로 진입한다.
 # ==========================================
 with st.sidebar:
@@ -1427,7 +1497,10 @@ def render_pass_tab():
 
             for msg in st.session_state.pass_messages:
                 with st.chat_message(msg["role"]):
-                    st.markdown(msg["content"])
+                    if msg["role"] == "assistant":
+                        render_handwritten_note(msg["content"])
+                    else:
+                        st.markdown(msg["content"])
 
             if st.session_state.pass_completed:
                 st.markdown(
