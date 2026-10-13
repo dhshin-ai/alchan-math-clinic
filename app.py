@@ -37,6 +37,29 @@ KAKAO_REDIRECT_URI = st.secrets.get("KAKAO_REDIRECT_URI", "https://math.studygro
 STUDENT_DATA_DIR = "student_data"
 TEACHER_DASHBOARD_PASSWORD = st.secrets.get("TEACHER_DASHBOARD_PASSWORD", "dahye1234")
 
+PASS_GRADE_LEVELS = ["중1", "중2", "중3", "고1", "고2", "고3"]
+DAILY_PASS_SCOPE_FILE = "daily_pass_scope.json"
+
+
+def load_daily_pass_scope():
+    """선생님이 학년별로 지정해 둔 '오늘의 개념 범위'를 불러온다. 없는 학년은 빈 문자열."""
+    try:
+        with open(DAILY_PASS_SCOPE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {}
+    return {grade: str(data.get(grade, "")).strip() for grade in PASS_GRADE_LEVELS}
+
+
+def save_daily_pass_scope(scope_by_grade):
+    """학년별 '오늘의 개념 범위'를 파일로 저장해, 모든 학생의 PASS 탭에 그대로 반영되게 한다."""
+    data = {grade: str(scope_by_grade.get(grade, "")).strip() for grade in PASS_GRADE_LEVELS}
+    try:
+        with open(DAILY_PASS_SCOPE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception:
+        pass
+
 
 def get_kakao_login_url():
     """카카오 로그인 동의 화면으로 이동하는 인가 URL을 만든다."""
@@ -133,6 +156,7 @@ def load_student_data(kakao_id):
         data.setdefault("pass_records", [])
         data.setdefault("pass_concept_summary", "")
         data.setdefault("pass_completed_date", "")
+        data.setdefault("pass_grade", "")
         return data
     except (FileNotFoundError, json.JSONDecodeError):
         return None
@@ -141,7 +165,7 @@ def load_student_data(kakao_id):
 def save_student_data(
     kakao_id, nickname, student_grade, selected_mode, messages,
     pass_topic=None, pass_messages=None, pass_completed=False, pass_records=None,
-    pass_concept_summary="", pass_completed_date="",
+    pass_concept_summary="", pass_completed_date="", pass_grade="",
 ):
     """새로고침/재접속 후에도 대화 기록·PASS 진행 상황·PASS 기록이 이어지도록 학생별 파일로 저장한다."""
     data = {
@@ -156,6 +180,7 @@ def save_student_data(
         "pass_records": pass_records or [],
         "pass_concept_summary": pass_concept_summary,
         "pass_completed_date": pass_completed_date,
+        "pass_grade": pass_grade,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
@@ -180,6 +205,7 @@ def persist_current_student():
             pass_records=st.session_state.get("pass_records", []),
             pass_concept_summary=st.session_state.get("pass_concept_summary", ""),
             pass_completed_date=st.session_state.get("pass_completed_date", ""),
+            pass_grade=st.session_state.get("pass_grade", ""),
         )
 
 
@@ -209,6 +235,28 @@ def render_teacher_dashboard():
             st.session_state.teacher_mode = False
             st.session_state.pop("teacher_pw_input", None)
             st.rerun()
+
+    st.markdown("---")
+
+    st.markdown("#### 📌 학년별 오늘의 개념 범위 설정")
+    st.caption("여기에 입력한 범위가 학생들의 '개념 PASS' 탭에 그대로 노출되고, AI 구술 질문도 이 범위 안에서만 나갑니다.")
+
+    current_scope = load_daily_pass_scope()
+    with st.form("daily_pass_scope_form"):
+        new_scope = {}
+        scope_cols = st.columns(3)
+        for i, grade in enumerate(PASS_GRADE_LEVELS):
+            with scope_cols[i % 3]:
+                new_scope[grade] = st.text_area(
+                    grade,
+                    value=current_scope.get(grade, ""),
+                    height=100,
+                    key=f"scope_input_{grade}",
+                    placeholder="예: 나머지정리와 인수정리",
+                )
+        if st.form_submit_button("💾 오늘의 범위 저장하기", use_container_width=True):
+            save_daily_pass_scope(new_scope)
+            st.success("✅ 오늘의 개념 범위를 저장했습니다! 학생 화면에 바로 반영됩니다.")
 
     st.markdown("---")
 
@@ -848,12 +896,14 @@ def render_stamp_board(pass_records):
         st.success("🎉 축하합니다! 10개 달성! 다혜쌤에게 보여주고 선물을 받으세요 🎁")
 
 
-def load_pass_system_prompt(student_grade):
+def load_pass_system_prompt(pass_grade, scope_text):
     return (
         "너는 알찬학원의 '오늘의 개념 PASS' 테스트를 담당하는, 깐깐하지만 친절한 조교다.\n"
-        f"★ [학생 선택 과목: {student_grade}]\n\n"
+        f"★ [학생 학년: {pass_grade}]\n"
+        f"★ [🚨 오늘 선생님이 지정한 범위 - 반드시 이 범위 안에서만 출제할 것]: {scope_text}\n"
+        "- 위 지정 범위를 벗어난 다른 단원이나 개념은 절대 묻지 마라. 학생이 다른 단원 이야기를 꺼내도 지정 범위로 다시 데려와라.\n\n"
         "★ [1. 질문 던지기]\n"
-        "- 학생이 알려준 단원의 핵심 개념이나 자주 틀리는 오개념을 확인할 수 있는 질문을 오직 1개만 던져라.\n"
+        "- 위 지정 범위의 핵심 개념이나 자주 틀리는 오개념을 확인할 수 있는 질문을 오직 1개만 던져라.\n"
         "- 질문 문장 안에 답이나 핵심 키워드를 절대 미리 흘리지 마라.\n\n"
         "★ [2. 채점 원칙 - 가장 중요한 규칙]\n"
         "- 학생의 답변에 핵심 키워드가 빠졌거나 설명이 정확하지 않으면, 정답을 절대로 먼저 알려주지 말고 짧은 힌트만 주면서 다시 답해보라고 유도해라.\n"
@@ -1087,6 +1137,8 @@ if "pass_concept_summary" not in st.session_state:
     st.session_state.pass_concept_summary = ""
 if "pass_completed_date" not in st.session_state:
     st.session_state.pass_completed_date = ""
+if "pass_grade" not in st.session_state:
+    st.session_state.pass_grade = ""
 if "teacher_mode" not in st.session_state:
     st.session_state.teacher_mode = False
 
@@ -1133,6 +1185,7 @@ if not st.session_state.authenticated and "code" in st.query_params:
                 st.session_state.pass_records = saved.get("pass_records", [])
                 st.session_state.pass_concept_summary = saved.get("pass_concept_summary", "")
                 st.session_state.pass_completed_date = saved.get("pass_completed_date", "")
+                st.session_state.pass_grade = saved.get("pass_grade", "")
                 st.session_state.pop("pass_card_bytes", None)
                 st.session_state.authenticated = True
             else:
@@ -1145,6 +1198,7 @@ if not st.session_state.authenticated and "code" in st.query_params:
                 st.session_state.pass_records = []
                 st.session_state.pass_concept_summary = ""
                 st.session_state.pass_completed_date = ""
+                st.session_state.pass_grade = ""
                 st.session_state.pop("pass_card_bytes", None)
                 st.session_state.kakao_needs_grade = True
         except Exception as e:
@@ -1201,7 +1255,7 @@ with cap_col2:
             "authenticated", "student_name", "kakao_id", "kakao_needs_grade",
             "selected_mode", "messages", "last_upload_key", "slack_thread_ts",
             "pass_topic", "pass_messages", "pass_completed", "pass_records",
-            "pass_concept_summary", "pass_completed_date", "pass_card_bytes",
+            "pass_concept_summary", "pass_completed_date", "pass_card_bytes", "pass_grade",
         ]:
             st.session_state.pop(key, None)
         st.rerun()
@@ -1535,7 +1589,7 @@ def render_clinic_tab():
 
 def render_pass_tab():
     st.markdown("### 💮 오늘의 개념 PASS")
-    st.caption("오늘 배운 단원을 적고 도전해봐! 핵심 개념이나 오개념을 확인하는 질문을 던져줄게.")
+    st.caption("선생님이 오늘 정해준 범위 안에서, 핵심 개념이나 오개념을 확인하는 질문을 던져줄게.")
 
     render_stamp_board(st.session_state.pass_records)
     st.markdown("---")
@@ -1544,14 +1598,34 @@ def render_pass_tab():
 
     with pass_col_main:
         if not st.session_state.pass_topic:
-            topic_input = st.text_input(
-                "오늘 배운 단원을 입력해줘 (예: 이차함수 최대최소)", key="pass_topic_input"
+            default_index = (
+                PASS_GRADE_LEVELS.index(st.session_state.pass_grade)
+                if st.session_state.pass_grade in PASS_GRADE_LEVELS
+                else 0
             )
-            if st.button("🚀 PASS 도전하기", key="pass_start_btn", use_container_width=True, type="primary"):
-                clean_topic = topic_input.strip()
-                if not clean_topic:
-                    st.error("단원 이름을 먼저 입력해 줘!")
-                elif not api_key:
+            selected_grade = st.selectbox(
+                "자신의 학년을 선택해줘",
+                PASS_GRADE_LEVELS,
+                index=default_index,
+                key="pass_grade_select",
+            )
+            st.session_state.pass_grade = selected_grade
+
+            today_scope = load_daily_pass_scope().get(selected_grade, "")
+
+            if today_scope:
+                st.info(f"📌 **오늘의 미션: {selected_grade} - {today_scope}**")
+            else:
+                st.warning("오늘의 지정된 개념이 없습니다. 선생님이 범위를 등록하면 도전할 수 있어요!")
+
+            if st.button(
+                "🚀 PASS 도전하기",
+                key="pass_start_btn",
+                use_container_width=True,
+                type="primary",
+                disabled=not today_scope,
+            ):
+                if not api_key:
                     st.error("API 키가 설정되지 않았습니다.")
                 else:
                     client = anthropic.Anthropic(api_key=api_key)
@@ -1560,14 +1634,14 @@ def render_pass_tab():
                             response = client.messages.create(
                                 model=MODEL_NAME,
                                 max_tokens=600,
-                                system=load_pass_system_prompt(st.session_state.student_grade),
+                                system=load_pass_system_prompt(selected_grade, today_scope),
                                 messages=[{
                                     "role": "user",
-                                    "content": f"[오늘 배운 단원: {clean_topic}] 이 단원의 핵심 개념이나 자주 틀리는 오개념을 확인하는 질문을 1개만 던져라.",
+                                    "content": f"[선생님이 지정한 오늘의 범위: {today_scope}] 이 범위 안에서 핵심 개념이나 자주 틀리는 오개념을 확인하는 질문을 1개만 던져라.",
                                 }],
                             )
                             bot_reply = get_response_text(response)
-                            st.session_state.pass_topic = clean_topic
+                            st.session_state.pass_topic = today_scope
                             st.session_state.pass_messages = [{"role": "assistant", "content": bot_reply}]
                             st.session_state.pass_completed = False
                             persist_current_student()
@@ -1653,7 +1727,7 @@ def render_pass_tab():
                                 response = client.messages.create(
                                     model=MODEL_NAME,
                                     max_tokens=800,
-                                    system=load_pass_system_prompt(st.session_state.student_grade),
+                                    system=load_pass_system_prompt(st.session_state.pass_grade, st.session_state.pass_topic),
                                     messages=api_pass_messages,
                                 )
                                 bot_reply = get_response_text(response)

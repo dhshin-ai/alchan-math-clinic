@@ -1,2 +1,3 @@
 .streamlit/secrets.toml
 student_data/
+daily_pass_scope.json
