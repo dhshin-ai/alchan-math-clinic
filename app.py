@@ -826,6 +826,30 @@ def inject_custom_css():
     }
 
     /* ==========================================
+       🔓 "80% 풀이 바로 보기" - 보조적인 마지막 수단이라는 느낌으로 톤다운
+       (강조색을 빼서 학생이 메인 버튼으로 착각해 바로 누르지 않도록 한다)
+       ========================================== */
+    div[data-testid$="_80_btn"] button {
+        background-color: #F0F2F6 !important;
+        color: #6B7280 !important;
+        border: 1px solid #D1D5DB !important;
+        box-shadow: none !important;
+        font-weight: 500 !important;
+    }
+
+    div[data-testid$="_80_btn"] button:hover {
+        background-color: #E5E7EB !important;
+        color: #4B5563 !important;
+        border-color: #D1D5DB !important;
+    }
+
+    div[data-testid$="_80_btn"] button:focus:not(:active) {
+        color: #6B7280 !important;
+        border-color: #D1D5DB !important;
+        box-shadow: none !important;
+    }
+
+    /* ==========================================
        💬 오리지널 카카오 로그인 버튼 (공식 브랜드 컬러)
        ========================================== */
     .kakao-login-btn {
@@ -1986,7 +2010,7 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                 st.rerun()
 
         with btn_col2:
-            if st.button("🔓 80% 풀이 바로 보기", use_container_width=True, type="primary", key=f"{state_prefix}_80_btn"):
+            if st.button("🔓 80% 풀이 바로 보기", use_container_width=True, key=f"{state_prefix}_80_btn"):
                 st.session_state[messages_key].append({"role": "user", "content": "진짜 모르겠어. 날 괴롭히지 말고 풀이의 80%를 시원하게 바로 보여줘!"})
                 st.rerun()
 
