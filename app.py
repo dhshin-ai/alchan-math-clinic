@@ -1,5 +1,4 @@
 import base64
-import html
 import io
 import json
 import os
@@ -56,7 +55,7 @@ TEACHER_DASHBOARD_PASSWORD = st.secrets.get("TEACHER_DASHBOARD_PASSWORD", "dahye
 
 PASS_GRADE_LEVELS = ["중1", "중2", "중3", "고1", "고2", "고3"]
 DAILY_PASS_SCOPE_FILE = "daily_pass_scope.json"
-MODE_OPTIONS = ["❓ 질문 클리닉", "🔍 오답 첨삭", "💮 개념 PASS"]
+MODE_OPTIONS = ["❓ 질문 클리닉", "🔍 오답 첨삭", "💮 개념 PASS", "👤 마이페이지"]
 
 
 def load_daily_pass_scope():
@@ -1043,13 +1042,12 @@ def _render_clinic_message(msg):
             st.markdown(msg["content"])
 
 
-@st.dialog("📁 나의 지난 질문 & 오답노트", width="large")
-def render_question_archive_dialog():
-    """question_archive를 날짜별(최신순)로 묶어 카드 형태로 보여주는 팝업.
+def render_question_archive_cards():
+    """question_archive를 날짜별(최신순)로 묶어 expander 카드로 보여준다 (마이페이지 '오답노트' 탭).
 
-    메인 화면은 매번 백지로 시작하지만, 완료된 질문은 여기서 언제든 다시 볼 수 있다.
-    새로 질문하거나 PASS를 완료하면 백그라운드에서 바로 저장되므로, 팝업을 열 때마다
-    최신 question_archive가 그대로 반영된다.
+    새로 질문하거나 후속 힌트를 주고받을 때마다 백그라운드에서 바로 저장되므로
+    (upsert_question_archive_entry → persist_current_student), 이 탭을 열 때마다
+    항상 최신 question_archive가 그대로 반영된다.
     """
     archive = st.session_state.get("question_archive", [])
     if not archive:
@@ -1065,11 +1063,9 @@ def render_question_archive_dialog():
         st.markdown(f"#### 🗓️ {date_key}")
         day_entries = sorted(by_date[date_key], key=lambda e: e.get("created_at", ""), reverse=True)
         for entry in day_entries:
-            with st.container(border=True):
-                st.caption(f"{entry.get('feature', '')} · {entry.get('created_at', '')}")
+            with st.expander(f"{entry.get('feature', '')} · {entry.get('created_at', '')}"):
                 for msg in entry.get("messages", []):
                     _render_clinic_message(msg)
-        st.markdown("")
 
 
 def load_system_prompt(student_grade):
@@ -1147,6 +1143,32 @@ def calculate_pass_streak(pass_records, today=None):
         streak += 1
         cursor -= timedelta(days=1)
     return streak
+
+
+def render_streak_badge(pass_records):
+    """🔥 N일 연속 PASS 배지. 스트릭이 0이면 대신 부드러운 유도 문구를 보여준다."""
+    streak = calculate_pass_streak(pass_records)
+    if streak > 0:
+        st.markdown(
+            f"""
+            <div style="
+                display: inline-block;
+                background: linear-gradient(135deg, #FF8A3D, #FF5A5F);
+                color: #FFFFFF;
+                font-weight: 800;
+                font-size: 1.05rem;
+                padding: 0.55rem 1.3rem;
+                border-radius: 999px;
+                box-shadow: 0 6px 16px rgba(255, 90, 95, 0.35);
+                margin-bottom: 1rem;
+            ">
+                🔥 {streak}일 연속 PASS 달성 중!
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        st.caption("💤 아직 연속 기록이 없어요. 오늘 '💮 개념 PASS'에 도전해서 스트릭을 시작해보자!")
 
 
 def get_stamp_board_state(total_pass_count):
@@ -1558,36 +1580,6 @@ if not st.session_state.authenticated and "error" in st.query_params:
     st.session_state.kakao_login_error = "카카오 로그인이 취소되었습니다."
     st.rerun()
 
-if st.session_state.authenticated:
-    _pass_streak = calculate_pass_streak(st.session_state.pass_records)
-    if _pass_streak > 0:
-        st.markdown(
-            f"""
-            <div style="
-                display: inline-block;
-                background: linear-gradient(135deg, #FF8A3D, #FF5A5F);
-                color: #FFFFFF;
-                font-weight: 800;
-                font-size: 1.05rem;
-                padding: 0.55rem 1.3rem;
-                border-radius: 999px;
-                box-shadow: 0 6px 16px rgba(255, 90, 95, 0.35);
-                margin-bottom: 1rem;
-            ">
-                🔥 현재 {_pass_streak}일 연속 PASS 중!
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        st.caption("💤 아직 연속 기록이 없어요. 오늘 '💮 개념 PASS'에 도전해서 스트릭을 시작해보자!")
-
-    archive_col1, archive_col2 = st.columns([3, 1])
-    with archive_col2:
-        if st.button("📁 나의 지난 질문 & 오답노트", use_container_width=True, key="open_archive_btn"):
-            render_question_archive_dialog()
-
-
 def render_login_required_gate(feature_label):
     """로그인 전 상태에서 각 탭 내부에 뜨는 안내.
 
@@ -1928,194 +1920,234 @@ def render_pass_tab():
         unsafe_allow_html=True,
     )
 
-    render_stamp_board(st.session_state.pass_records)
     st.markdown("---")
 
-    pass_col_main, pass_col_history = st.columns([3, 1])
+    if not st.session_state.pass_topic:
+        default_index = (
+            PASS_GRADE_LEVELS.index(st.session_state.pass_grade)
+            if st.session_state.pass_grade in PASS_GRADE_LEVELS
+            else 0
+        )
+        selected_grade = st.selectbox(
+            "자신의 학년을 선택해줘",
+            PASS_GRADE_LEVELS,
+            index=default_index,
+            key="pass_grade_select",
+        )
+        st.session_state.pass_grade = selected_grade
 
-    with pass_col_main:
-        if not st.session_state.pass_topic:
-            default_index = (
-                PASS_GRADE_LEVELS.index(st.session_state.pass_grade)
-                if st.session_state.pass_grade in PASS_GRADE_LEVELS
-                else 0
-            )
-            selected_grade = st.selectbox(
-                "자신의 학년을 선택해줘",
-                PASS_GRADE_LEVELS,
-                index=default_index,
-                key="pass_grade_select",
-            )
-            st.session_state.pass_grade = selected_grade
+        today_scope = load_daily_pass_scope().get(selected_grade, "")
 
-            today_scope = load_daily_pass_scope().get(selected_grade, "")
+        if today_scope:
+            st.info(f"📌 **오늘의 미션: {selected_grade} - {today_scope}**")
+        else:
+            st.warning("오늘의 지정된 개념이 없습니다. 선생님이 범위를 등록하면 도전할 수 있어요!")
 
-            if today_scope:
-                st.info(f"📌 **오늘의 미션: {selected_grade} - {today_scope}**")
+        if st.button(
+            "🚀 PASS 도전하기",
+            key="pass_start_btn",
+            use_container_width=True,
+            type="primary",
+            disabled=not today_scope,
+        ):
+            if not api_key:
+                st.error("API 키가 설정되지 않았습니다.")
             else:
-                st.warning("오늘의 지정된 개념이 없습니다. 선생님이 범위를 등록하면 도전할 수 있어요!")
+                client = anthropic.Anthropic(api_key=api_key)
+                with st.spinner("질문을 준비하는 중..."):
+                    try:
+                        response = client.messages.create(
+                            model=MODEL_NAME,
+                            max_tokens=600,
+                            system=load_pass_system_prompt(selected_grade, today_scope),
+                            messages=[{
+                                "role": "user",
+                                "content": f"[선생님이 지정한 오늘의 범위: {today_scope}] 이 범위 안에서 핵심 개념이나 자주 틀리는 오개념을 확인하는 질문을 1개만 던져라.",
+                            }],
+                        )
+                        bot_reply = get_response_text(response)
+                        st.session_state.pass_topic = today_scope
+                        st.session_state.pass_messages = [{"role": "assistant", "content": bot_reply}]
+                        st.session_state.pass_completed = False
+                        persist_current_student()
+                        st.rerun()
+                    except Exception as e:
+                        show_friendly_error(e)
+    else:
+        top_c1, top_c2 = st.columns([3, 1])
+        with top_c1:
+            st.markdown(f"#### 📘 도전 단원: **{st.session_state.pass_topic}**")
+        with top_c2:
+            if st.button("🔄 다른 단원 도전", key="pass_reset_btn", use_container_width=True):
+                st.session_state.pass_topic = None
+                st.session_state.pass_messages = []
+                st.session_state.pass_completed = False
+                st.session_state.pass_concept_summary = ""
+                st.session_state.pass_completed_date = ""
+                st.session_state.pop("pass_card_bytes", None)
+                persist_current_student()
+                st.rerun()
 
-            if st.button(
-                "🚀 PASS 도전하기",
-                key="pass_start_btn",
+        # 대화 기록: 오래된 턴은 접힌 expander, 가장 최근 1턴만 바로 보이게
+        pass_history = st.session_state.pass_messages
+        pass_older, pass_recent = (
+            (pass_history[:-2], pass_history[-2:]) if len(pass_history) > 2 else ([], pass_history)
+        )
+        if pass_older:
+            with st.expander("📝 이전 질문/기록 보기", expanded=False):
+                for msg in pass_older:
+                    _render_pass_message(msg)
+        for msg in pass_recent:
+            _render_pass_message(msg)
+
+        if st.session_state.pass_completed:
+            st.markdown(
+                """
+                <div style="
+                    background: linear-gradient(135deg, #3A449A, #00A19D);
+                    border-radius: 20px;
+                    padding: 2rem 1.5rem;
+                    text-align: center;
+                    box-shadow: 0 10px 30px rgba(58, 68, 154, 0.3);
+                    margin: 1.2rem 0;
+                ">
+                    <div style="font-size: 2.1rem; font-weight: 800; color: #FFFFFF; margin-bottom: 0.3rem;">
+                        💮 PASS 완료!
+                    </div>
+                    <div style="font-size: 1.05rem; color: #F0FDFA; font-weight: 600;">
+                        오늘의 개념을 완벽하게 통과했어요!
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            if not st.session_state.get("pass_card_bytes"):
+                st.session_state.pass_card_bytes = generate_pass_card(
+                    nickname=st.session_state.student_name,
+                    topic=st.session_state.pass_topic,
+                    concept_summary=st.session_state.pass_concept_summary or st.session_state.pass_topic,
+                    date_str=st.session_state.pass_completed_date,
+                )
+            st.image(st.session_state.pass_card_bytes, use_container_width=True)
+            st.success("저장해서 인스타에 인증하거나 배경화면으로 써보세요!")
+            safe_filename = re.sub(r"[^0-9A-Za-z가-힣_-]", "_", st.session_state.pass_topic)[:30]
+            st.download_button(
+                "📥 PASS 인증샷 저장하기",
+                data=st.session_state.pass_card_bytes,
+                file_name=f"PASS_{safe_filename}.png",
+                mime="image/png",
                 use_container_width=True,
-                type="primary",
-                disabled=not today_scope,
-            ):
+                key="pass_card_download_btn",
+            )
+        else:
+            if pass_answer := st.chat_input("여기에 답변을 적어줘!", key="pass_chat_input"):
+                st.session_state.pass_messages.append({"role": "user", "content": pass_answer})
+
                 if not api_key:
                     st.error("API 키가 설정되지 않았습니다.")
                 else:
                     client = anthropic.Anthropic(api_key=api_key)
-                    with st.spinner("질문을 준비하는 중..."):
+                    api_pass_messages = [
+                        {"role": m["role"], "content": m["content"]}
+                        for m in st.session_state.pass_messages
+                    ]
+                    with st.spinner("답변을 확인하는 중..."):
                         try:
                             response = client.messages.create(
                                 model=MODEL_NAME,
-                                max_tokens=600,
-                                system=load_pass_system_prompt(selected_grade, today_scope),
-                                messages=[{
-                                    "role": "user",
-                                    "content": f"[선생님이 지정한 오늘의 범위: {today_scope}] 이 범위 안에서 핵심 개념이나 자주 틀리는 오개념을 확인하는 질문을 1개만 던져라.",
-                                }],
+                                max_tokens=800,
+                                system=load_pass_system_prompt(st.session_state.pass_grade, st.session_state.pass_topic),
+                                messages=api_pass_messages,
                             )
                             bot_reply = get_response_text(response)
-                            st.session_state.pass_topic = today_scope
-                            st.session_state.pass_messages = [{"role": "assistant", "content": bot_reply}]
-                            st.session_state.pass_completed = False
+                            passed = bot_reply.strip().startswith(PASS_SUCCESS_TOKEN)
+                            if passed:
+                                body = bot_reply.strip()[len(PASS_SUCCESS_TOKEN):].strip()
+                                summary = ""
+                                if body.upper().startswith("SUMMARY:"):
+                                    first_line, _, remainder = body.partition("\n")
+                                    summary = first_line.split(":", 1)[1].strip()
+                                    body = remainder.strip()
+                                bot_reply = body or "완벽하게 통과했어! 정말 잘했어요! 🎉"
+
+                                st.session_state.pass_completed = True
+                                st.session_state.pass_concept_summary = summary or st.session_state.pass_topic
+                                kst = timezone(timedelta(hours=9))
+                                now_kst = datetime.now(kst)
+                                st.session_state.pass_completed_date = now_kst.strftime("%Y.%m.%d")
+                                st.session_state.pass_records.append({
+                                    "topic": st.session_state.pass_topic,
+                                    "completed_at": now_kst.strftime("%Y-%m-%d %H:%M"),
+                                    "concept_summary": summary or st.session_state.pass_topic,
+                                })
+                                st.session_state.pop("pass_card_bytes", None)
+                                st.balloons()
+                            st.session_state.pass_messages.append({"role": "assistant", "content": bot_reply})
                             persist_current_student()
                             st.rerun()
                         except Exception as e:
                             show_friendly_error(e)
-        else:
-            top_c1, top_c2 = st.columns([3, 1])
-            with top_c1:
-                st.markdown(f"#### 📘 도전 단원: **{st.session_state.pass_topic}**")
-            with top_c2:
-                if st.button("🔄 다른 단원 도전", key="pass_reset_btn", use_container_width=True):
-                    st.session_state.pass_topic = None
-                    st.session_state.pass_messages = []
-                    st.session_state.pass_completed = False
-                    st.session_state.pass_concept_summary = ""
-                    st.session_state.pass_completed_date = ""
-                    st.session_state.pop("pass_card_bytes", None)
-                    persist_current_student()
-                    st.rerun()
 
-            # 대화 기록: 오래된 턴은 접힌 expander, 가장 최근 1턴만 바로 보이게
-            pass_history = st.session_state.pass_messages
-            pass_older, pass_recent = (
-                (pass_history[:-2], pass_history[-2:]) if len(pass_history) > 2 else ([], pass_history)
+
+def render_pass_card_vault():
+    """지금까지 통과한 개념들을 목록으로 보여주고, 포토카드를 즉시 다시 받을 수 있게 한다.
+
+    PNG 자체는 저장해 두지 않고(용량 절약), pass_records에 쌓인 topic/completed_at/
+    concept_summary로 그때그때 다시 그려서 보여준다 - generate_pass_card()는 순수
+    PIL 연산이라 API 호출 없이 바로 끝난다.
+    """
+    records = st.session_state.get("pass_records", [])
+    if not records:
+        st.info("아직 PASS한 개념이 없어요. '💮 개념 PASS' 탭에서 오늘 도전해보자!")
+        return
+
+    for i, rec in enumerate(reversed(records)):
+        topic = rec.get("topic", "-")
+        completed_at = rec.get("completed_at", "-")
+        concept_summary = rec.get("concept_summary") or topic
+        date_str = completed_at[:10].replace("-", ".") if completed_at else ""
+
+        with st.expander(f"💮 {topic} · {completed_at}"):
+            card_bytes = generate_pass_card(
+                nickname=st.session_state.student_name,
+                topic=topic,
+                concept_summary=concept_summary,
+                date_str=date_str,
             )
-            if pass_older:
-                with st.expander("📝 이전 질문/기록 보기", expanded=False):
-                    for msg in pass_older:
-                        _render_pass_message(msg)
-            for msg in pass_recent:
-                _render_pass_message(msg)
+            st.image(card_bytes, use_container_width=True)
+            safe_filename = re.sub(r"[^0-9A-Za-z가-힣_-]", "_", topic)[:30]
+            st.download_button(
+                "📥 포토카드 다운로드",
+                data=card_bytes,
+                file_name=f"PASS_{safe_filename}.png",
+                mime="image/png",
+                use_container_width=True,
+                key=f"pass_vault_dl_{i}",
+            )
 
-            if st.session_state.pass_completed:
-                st.markdown(
-                    """
-                    <div style="
-                        background: linear-gradient(135deg, #3A449A, #00A19D);
-                        border-radius: 20px;
-                        padding: 2rem 1.5rem;
-                        text-align: center;
-                        box-shadow: 0 10px 30px rgba(58, 68, 154, 0.3);
-                        margin: 1.2rem 0;
-                    ">
-                        <div style="font-size: 2.1rem; font-weight: 800; color: #FFFFFF; margin-bottom: 0.3rem;">
-                            💮 PASS 완료!
-                        </div>
-                        <div style="font-size: 1.05rem; color: #F0FDFA; font-weight: 600;">
-                            오늘의 개념을 완벽하게 통과했어요!
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
 
-                if not st.session_state.get("pass_card_bytes"):
-                    st.session_state.pass_card_bytes = generate_pass_card(
-                        nickname=st.session_state.student_name,
-                        topic=st.session_state.pass_topic,
-                        concept_summary=st.session_state.pass_concept_summary or st.session_state.pass_topic,
-                        date_str=st.session_state.pass_completed_date,
-                    )
-                st.image(st.session_state.pass_card_bytes, use_container_width=True)
-                st.success("저장해서 인스타에 인증하거나 배경화면으로 써보세요!")
-                safe_filename = re.sub(r"[^0-9A-Za-z가-힣_-]", "_", st.session_state.pass_topic)[:30]
-                st.download_button(
-                    "📥 PASS 인증샷 저장하기",
-                    data=st.session_state.pass_card_bytes,
-                    file_name=f"PASS_{safe_filename}.png",
-                    mime="image/png",
-                    use_container_width=True,
-                    key="pass_card_download_btn",
-                )
-            else:
-                if pass_answer := st.chat_input("여기에 답변을 적어줘!", key="pass_chat_input"):
-                    st.session_state.pass_messages.append({"role": "user", "content": pass_answer})
+def render_my_page_tab():
+    st.markdown("### 👤 마이페이지")
 
-                    if not api_key:
-                        st.error("API 키가 설정되지 않았습니다.")
-                    else:
-                        client = anthropic.Anthropic(api_key=api_key)
-                        api_pass_messages = [
-                            {"role": m["role"], "content": m["content"]}
-                            for m in st.session_state.pass_messages
-                        ]
-                        with st.spinner("답변을 확인하는 중..."):
-                            try:
-                                response = client.messages.create(
-                                    model=MODEL_NAME,
-                                    max_tokens=800,
-                                    system=load_pass_system_prompt(st.session_state.pass_grade, st.session_state.pass_topic),
-                                    messages=api_pass_messages,
-                                )
-                                bot_reply = get_response_text(response)
-                                passed = bot_reply.strip().startswith(PASS_SUCCESS_TOKEN)
-                                if passed:
-                                    body = bot_reply.strip()[len(PASS_SUCCESS_TOKEN):].strip()
-                                    summary = ""
-                                    if body.upper().startswith("SUMMARY:"):
-                                        first_line, _, remainder = body.partition("\n")
-                                        summary = first_line.split(":", 1)[1].strip()
-                                        body = remainder.strip()
-                                    bot_reply = body or "완벽하게 통과했어! 정말 잘했어요! 🎉"
+    if not st.session_state.authenticated:
+        render_login_required_gate("👤 마이페이지")
+        return
 
-                                    st.session_state.pass_completed = True
-                                    st.session_state.pass_concept_summary = summary or st.session_state.pass_topic
-                                    kst = timezone(timedelta(hours=9))
-                                    now_kst = datetime.now(kst)
-                                    st.session_state.pass_completed_date = now_kst.strftime("%Y.%m.%d")
-                                    st.session_state.pass_records.append({
-                                        "topic": st.session_state.pass_topic,
-                                        "completed_at": now_kst.strftime("%Y-%m-%d %H:%M"),
-                                    })
-                                    st.session_state.pop("pass_card_bytes", None)
-                                    st.balloons()
-                                st.session_state.pass_messages.append({"role": "assistant", "content": bot_reply})
-                                persist_current_student()
-                                st.rerun()
-                            except Exception as e:
-                                show_friendly_error(e)
+    tab_attendance, tab_notes, tab_vault = st.tabs(
+        ["🔥 나의 출석 & 스탬프", "📝 오답노트", "🎴 개념 PASS 포토카드 보관함"]
+    )
 
-    with pass_col_history:
-        with st.expander("📝 이전 질문/기록 보기", expanded=False):
-            st.markdown("##### 📋 나의 PASS 기록")
-            if st.session_state.pass_records:
-                for rec in reversed(st.session_state.pass_records):
-                    safe_topic = html.escape(str(rec.get("topic", "")))
-                    safe_date = html.escape(str(rec.get("completed_at", "")))
-                    st.markdown(
-                        f"<div style='font-size:0.82rem; line-height:1.5; margin-bottom:0.6rem;'>"
-                        f"💮 <b>{safe_topic}</b><br>"
-                        f"<span style='color:#64748B;'>🗓️ {safe_date}</span>"
-                        f"</div>",
-                        unsafe_allow_html=True,
-                    )
-            else:
-                st.caption("아직 PASS한 단원이 없어요. 지금 도전해볼까?")
+    with tab_attendance:
+        st.markdown(f"#### 👋 {st.session_state.student_name} 님")
+        render_streak_badge(st.session_state.pass_records)
+        render_stamp_board(st.session_state.pass_records)
+
+    with tab_notes:
+        render_question_archive_cards()
+
+    with tab_vault:
+        render_pass_card_vault()
 
 
 # st.tabs는 파이썬에서 활성 탭을 지정할 방법이 없어 카카오 로그인 리다이렉트 후
@@ -2135,3 +2167,5 @@ elif st.session_state.selected_mode == "🔍 오답 첨삭":
     render_mistake_review_tab()
 elif st.session_state.selected_mode == "💮 개념 PASS":
     render_pass_tab()
+elif st.session_state.selected_mode == "👤 마이페이지":
+    render_my_page_tab()
