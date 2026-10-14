@@ -79,8 +79,12 @@ def get_supabase_client():
     """
     if create_client is None:
         return None
-    url = st.secrets.get("SUPABASE_URL", "")
-    key = st.secrets.get("SUPABASE_SERVICE_KEY", "")
+    # 끝에 슬래시('/')가 붙은 URL을 PostgREST에 그대로 넘기면 모든 요청이
+    # "Invalid path specified in request URL"(PGRST125)로 실패한다 - Supabase
+    # 대시보드에서 URL을 복사할 때 슬래시가 같이 붙는 실수가 흔해서 여기서 안전하게
+    # 제거한다.
+    url = st.secrets.get("SUPABASE_URL", "").strip().rstrip("/")
+    key = st.secrets.get("SUPABASE_SERVICE_KEY", "").strip()
     if not url or not key:
         return None
     try:
