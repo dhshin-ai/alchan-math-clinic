@@ -5,6 +5,7 @@ import json
 import os
 import re
 import ast
+import uuid
 import requests
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
@@ -169,21 +170,56 @@ def _deserialize_messages(raw_messages):
     return out
 
 
+def _serialize_archive(archive):
+    """question_archive(카드별 messages 포함)를 JSON 저장 가능한 형태로 변환한다."""
+    out = []
+    for entry in archive:
+        e = {k: v for k, v in entry.items() if k != "messages"}
+        e["messages"] = _serialize_messages(entry.get("messages", []))
+        out.append(e)
+    return out
+
+
+def _deserialize_archive(raw_archive):
+    out = []
+    for entry in raw_archive:
+        e = {k: v for k, v in entry.items() if k != "messages"}
+        e["messages"] = _deserialize_messages(entry.get("messages", []))
+        out.append(e)
+    return out
+
+
 def load_student_data(kakao_id):
-    """카카오 고유 회원번호로 저장된 학생의 과목/탭별 대화 기록/PASS 기록을 불러온다."""
+    """카카오 고유 회원번호로 저장된 학생의 과목/오답노트 아카이브/PASS 기록을 불러온다."""
     try:
         with open(_student_data_path(kakao_id), "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        # 구버전 포맷(messages + selected_mode 단일 필드) 호환: 모드에 맞는 탭으로 이관
+        # 구버전 포맷 호환: messages+selected_mode(가장 옛버전) → clinic/review_messages →
+        # question_archive(현재 포맷) 순으로 한 번씩 이관한다.
         if "clinic_messages" not in data and "messages" in data:
             if data.get("selected_mode") == "✍️ 내 풀이 검토 (문제 + 연습장)":
                 data["review_messages"] = data.get("messages", [])
             else:
                 data["clinic_messages"] = data.get("messages", [])
 
-        data["clinic_messages"] = _deserialize_messages(data.get("clinic_messages", []))
-        data["review_messages"] = _deserialize_messages(data.get("review_messages", []))
+        if "question_archive" not in data:
+            archive = []
+            fallback_date = (data.get("updated_at") or "")[:16].replace("T", " ")
+            for feature_label, msgs in (
+                ("❓ 질문 클리닉", data.get("clinic_messages", [])),
+                ("🔍 오답 첨삭", data.get("review_messages", [])),
+            ):
+                if msgs:
+                    archive.append({
+                        "id": uuid.uuid4().hex,
+                        "feature": feature_label,
+                        "created_at": fallback_date,
+                        "messages": msgs,
+                    })
+            data["question_archive"] = archive
+
+        data["question_archive"] = _deserialize_archive(data.get("question_archive", []))
         data["pass_messages"] = _deserialize_messages(data.get("pass_messages", []))
         data.setdefault("pass_topic", None)
         data.setdefault("pass_completed", False)
@@ -197,17 +233,21 @@ def load_student_data(kakao_id):
 
 
 def save_student_data(
-    kakao_id, nickname, student_grade, clinic_messages, review_messages,
+    kakao_id, nickname, student_grade, question_archive,
     pass_topic=None, pass_messages=None, pass_completed=False, pass_records=None,
     pass_concept_summary="", pass_completed_date="", pass_grade="",
 ):
-    """새로고침/재접속 후에도 탭별 대화 기록·PASS 진행 상황·PASS 기록이 이어지도록 학생별 파일로 저장한다."""
+    """학년/오답노트 아카이브/PASS 진행 상황·기록이 이어지도록 학생별 파일로 저장한다.
+
+    질문 클리닉·오답 첨삭의 '현재 화면' 대화(clinic_messages/review_messages)는 더 이상
+    저장하지 않는다 - 접속할 때마다 백지로 시작하고, 완료된 질문만 question_archive에
+    차곡차곡 쌓여 '나의 오답노트' 팝업에서 다시 볼 수 있다.
+    """
     data = {
         "kakao_id": kakao_id,
         "nickname": nickname,
         "student_grade": student_grade,
-        "clinic_messages": _serialize_messages(clinic_messages),
-        "review_messages": _serialize_messages(review_messages),
+        "question_archive": _serialize_archive(question_archive),
         "pass_topic": pass_topic,
         "pass_messages": _serialize_messages(pass_messages or []),
         "pass_completed": pass_completed,
@@ -225,14 +265,13 @@ def save_student_data(
 
 
 def persist_current_student():
-    """현재 세션(학년/탭별 대화 기록/PASS 진행 상황)을 로그인한 카카오 회원번호 파일에 저장한다."""
+    """현재 세션(학년/오답노트 아카이브/PASS 진행 상황)을 로그인한 카카오 회원번호 파일에 저장한다."""
     if st.session_state.get("kakao_id"):
         save_student_data(
             st.session_state.kakao_id,
             st.session_state.student_name,
             st.session_state.student_grade,
-            st.session_state.get("clinic_messages", []),
-            st.session_state.get("review_messages", []),
+            st.session_state.get("question_archive", []),
             pass_topic=st.session_state.get("pass_topic"),
             pass_messages=st.session_state.get("pass_messages", []),
             pass_completed=st.session_state.get("pass_completed", False),
@@ -241,6 +280,32 @@ def persist_current_student():
             pass_completed_date=st.session_state.get("pass_completed_date", ""),
             pass_grade=st.session_state.get("pass_grade", ""),
         )
+
+
+def upsert_question_archive_entry(state_prefix, feature_label, messages_key):
+    """현재 살아있는 대화(messages_key)를 question_archive의 해당 카드에 생성/갱신한다.
+
+    사진을 새로 올리면 새 카드를 만들고, 그 뒤 같은 문제로 이어지는 후속 대화는
+    (힌트 요청 등) 같은 카드를 계속 갱신한다 - 카드 1개 = 질문 1건.
+    """
+    entry_id_key = f"{state_prefix}_archive_entry_id"
+    entry_id = st.session_state.get(entry_id_key)
+    messages_snapshot = list(st.session_state[messages_key])
+
+    if entry_id:
+        for entry in st.session_state.question_archive:
+            if entry["id"] == entry_id:
+                entry["messages"] = messages_snapshot
+                return
+
+    new_id = uuid.uuid4().hex
+    st.session_state[entry_id_key] = new_id
+    st.session_state.question_archive.append({
+        "id": new_id,
+        "feature": feature_label,
+        "created_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M"),
+        "messages": messages_snapshot,
+    })
 
 
 def list_all_student_records():
@@ -371,11 +436,10 @@ def render_teacher_dashboard():
     for data in records:
         nickname = data.get("nickname", "익명 학생")
         grade = data.get("student_grade", "-")
-        clinic_messages = data.get("clinic_messages", [])
-        review_messages = data.get("review_messages", [])
+        archive = data.get("question_archive", [])
         pass_records = data.get("pass_records", [])
         updated_at = data.get("updated_at", "")
-        q_count = len([m for m in clinic_messages + review_messages if m.get("role") == "user"])
+        q_count = len(archive)
 
         with st.expander(f"👤 {nickname} ({grade}) · 질문 {q_count}건 · PASS {len(pass_records)}건"):
             st.caption(f"🆔 카카오 회원번호: {data.get('kakao_id', '-')} · 마지막 업데이트: {updated_at}")
@@ -387,15 +451,11 @@ def render_teacher_dashboard():
             else:
                 st.caption("아직 PASS 기록이 없습니다.")
 
-            st.markdown("##### ❓ 질문 클리닉 대화 내역")
-            if clinic_messages:
-                _render_msg_list(clinic_messages)
-            else:
-                st.caption("아직 대화 내역이 없습니다.")
-
-            st.markdown("##### 🔍 오답 첨삭 대화 내역")
-            if review_messages:
-                _render_msg_list(review_messages)
+            st.markdown("##### 📁 질문 클리닉 / 오답 첨삭 - 오답노트")
+            if archive:
+                for entry in sorted(archive, key=lambda e: e.get("created_at", ""), reverse=True):
+                    st.caption(f"{entry.get('feature', '')} · {entry.get('created_at', '')}")
+                    _render_msg_list(entry.get("messages", []))
             else:
                 st.caption("아직 대화 내역이 없습니다.")
 
@@ -970,6 +1030,48 @@ def render_assistant_content(content):
             render_jsxgraph(js_code)
 
 
+def _render_clinic_message(msg):
+    with st.chat_message(msg["role"]):
+        if msg["role"] == "assistant":
+            render_assistant_content(msg["content"])
+        elif msg.get("images"):
+            for img in msg["images"]:
+                st.image(img["bytes"], width=320)
+            if msg["content"]:
+                st.caption(msg["content"])
+        else:
+            st.markdown(msg["content"])
+
+
+@st.dialog("📁 나의 지난 질문 & 오답노트", width="large")
+def render_question_archive_dialog():
+    """question_archive를 날짜별(최신순)로 묶어 카드 형태로 보여주는 팝업.
+
+    메인 화면은 매번 백지로 시작하지만, 완료된 질문은 여기서 언제든 다시 볼 수 있다.
+    새로 질문하거나 PASS를 완료하면 백그라운드에서 바로 저장되므로, 팝업을 열 때마다
+    최신 question_archive가 그대로 반영된다.
+    """
+    archive = st.session_state.get("question_archive", [])
+    if not archive:
+        st.info("아직 저장된 질문이 없어요. 질문을 올리면 여기에 차곡차곡 쌓여요!")
+        return
+
+    by_date = {}
+    for entry in archive:
+        date_key = (entry.get("created_at") or "")[:10] or "날짜 미상"
+        by_date.setdefault(date_key, []).append(entry)
+
+    for date_key in sorted(by_date.keys(), reverse=True):
+        st.markdown(f"#### 🗓️ {date_key}")
+        day_entries = sorted(by_date[date_key], key=lambda e: e.get("created_at", ""), reverse=True)
+        for entry in day_entries:
+            with st.container(border=True):
+                st.caption(f"{entry.get('feature', '')} · {entry.get('created_at', '')}")
+                for msg in entry.get("messages", []):
+                    _render_clinic_message(msg)
+        st.markdown("")
+
+
 def load_system_prompt(student_grade):
     custom_notes = ""
     try:
@@ -1338,6 +1440,12 @@ if "clinic_last_upload_key" not in st.session_state:
     st.session_state.clinic_last_upload_key = None
 if "review_last_upload_key" not in st.session_state:
     st.session_state.review_last_upload_key = None
+if "clinic_archive_entry_id" not in st.session_state:
+    st.session_state.clinic_archive_entry_id = None
+if "review_archive_entry_id" not in st.session_state:
+    st.session_state.review_archive_entry_id = None
+if "question_archive" not in st.session_state:
+    st.session_state.question_archive = []
 if "pass_topic" not in st.session_state:
     st.session_state.pass_topic = None
 if "pass_messages" not in st.session_state:
@@ -1371,6 +1479,7 @@ with st.sidebar:
             for key in [
                 "authenticated", "student_name", "kakao_id", "kakao_needs_grade",
                 "clinic_messages", "review_messages", "clinic_last_upload_key", "review_last_upload_key",
+                "clinic_archive_entry_id", "review_archive_entry_id", "question_archive",
                 "slack_thread_ts", "pass_topic", "pass_messages", "pass_completed", "pass_records",
                 "pass_concept_summary", "pass_completed_date", "pass_card_bytes", "pass_grade",
             ]:
@@ -1410,10 +1519,12 @@ if not st.session_state.authenticated and "code" in st.query_params:
 
             saved = load_student_data(kakao_id)
             if saved and saved.get("student_grade"):
-                # 이미 과목을 선택해 둔 적이 있는 학생 → 탭별 대화 기록까지 그대로 복원하고 바로 입장
+                # 이미 과목을 선택해 둔 적이 있는 학생 → 바로 입장.
+                # 단, 질문 클리닉/오답 첨삭 화면은 매번 백지로 시작한다 (콴다처럼) -
+                # clinic_messages/review_messages는 일부러 복원하지 않는다. 지난 질문은
+                # question_archive에 그대로 남아 있어서 '나의 오답노트' 팝업에서 볼 수 있다.
                 st.session_state.student_grade = saved["student_grade"]
-                st.session_state.clinic_messages = saved.get("clinic_messages", [])
-                st.session_state.review_messages = saved.get("review_messages", [])
+                st.session_state.question_archive = saved.get("question_archive", [])
                 st.session_state.pass_topic = saved.get("pass_topic")
                 st.session_state.pass_messages = saved.get("pass_messages", [])
                 st.session_state.pass_completed = saved.get("pass_completed", False)
@@ -1427,6 +1538,7 @@ if not st.session_state.authenticated and "code" in st.query_params:
                 # 첫 로그인 → 과목 선택 한 번만 더 받는다 (이전 세션의 흔적이 섞이지 않게 초기화)
                 st.session_state.clinic_messages = []
                 st.session_state.review_messages = []
+                st.session_state.question_archive = []
                 st.session_state.pass_topic = None
                 st.session_state.pass_messages = []
                 st.session_state.pass_completed = False
@@ -1469,6 +1581,11 @@ if st.session_state.authenticated:
         )
     else:
         st.caption("💤 아직 연속 기록이 없어요. 오늘 '💮 개념 PASS'에 도전해서 스트릭을 시작해보자!")
+
+    archive_col1, archive_col2 = st.columns([3, 1])
+    with archive_col2:
+        if st.button("📁 나의 지난 질문 & 오답노트", use_container_width=True, key="open_archive_btn"):
+            render_question_archive_dialog()
 
 
 def render_login_required_gate(feature_label):
@@ -1527,19 +1644,6 @@ def render_login_required_gate(feature_label):
             st.warning("카카오 로그인이 아직 설정되지 않았습니다. 선생님에게 문의해 주세요.")
 
 
-def _render_clinic_message(msg):
-    with st.chat_message(msg["role"]):
-        if msg["role"] == "assistant":
-            render_assistant_content(msg["content"])
-        elif msg.get("images"):
-            for img in msg["images"]:
-                st.image(img["bytes"], width=320)
-            if msg["content"]:
-                st.caption(msg["content"])
-        else:
-            st.markdown(msg["content"])
-
-
 def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_uploader, caption_text):
     """'❓ 질문 클리닉'과 '🔍 오답 첨삭' 탭이 공유하는 렌더러.
 
@@ -1584,6 +1688,8 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
     if api_key and uploaded_problem and curr_upload_key != st.session_state.get(upload_key_key):
         st.session_state[upload_key_key] = curr_upload_key
         st.session_state[messages_key] = []
+        # 새 사진 = 새 질문 → 오답노트에도 새 카드를 만든다 (이전 카드를 계속 수정하지 않도록 끊어준다).
+        st.session_state[f"{state_prefix}_archive_entry_id"] = None
 
         client = anthropic.Anthropic(api_key=api_key)
         p_bytes = uploaded_problem.getvalue()
@@ -1670,16 +1776,20 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                     st.session_state.student_name, st.session_state.student_grade, mode, log_label, bot_reply,
                     skip_telegram=True,
                 )
+                upsert_question_archive_entry(state_prefix, feature_label, messages_key)
                 persist_current_student()
                 st.rerun()
             except Exception as e:
                 show_friendly_error(e)
 
     # ==========================================
-    # 대화 기록: 오래된 턴은 접힌 expander, 가장 최근 1턴(질문+답변)만 바로 보이게
-    # (새로고침 후 복원된 긴 기록이 한꺼번에 쏟아져 화면이 헷갈리는 걸 막는다)
+    # 대화 기록: 접속할 때마다 백지로 시작한다 (콴다처럼) - 지난 질문은 여기 안 쌓이고
+    # question_archive에 저장되어 '📁 나의 오답노트' 팝업에서만 다시 볼 수 있다.
+    # 길어진 현재 대화만 오래된 턴은 접어서 최근 1턴만 바로 보이게 한다.
     # ==========================================
     history = st.session_state[messages_key]
+    if not history:
+        st.info("👋 아직 질문이 없어요. 사진을 올려서 새로운 질문을 시작해봐!")
     older, recent = (history[:-2], history[-2:]) if len(history) > 2 else ([], history)
     if older:
         with st.expander("📝 이전 질문/기록 보기", expanded=False):
@@ -1767,6 +1877,7 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                         st.session_state.student_name, st.session_state.student_grade, mode,
                         last_student_text, bot_reply,
                     )
+                    upsert_question_archive_entry(state_prefix, feature_label, messages_key)
                     persist_current_student()
                     st.rerun()
                 except Exception as e:
