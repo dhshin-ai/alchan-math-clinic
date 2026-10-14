@@ -378,20 +378,52 @@ def insert_pass_record(topic, concept_summary, completed_at_dt):
         pass
 
 
-def list_all_student_records():
-    """선생님 대시보드용: 모든 학생 기록을 최근 업데이트순으로 Supabase에서 불러온다."""
+def _embedded_user(row):
+    """PostgREST 조인(embed)으로 함께 온 users 중첩 객체를 꺼낸다.
+
+    FK 관계상 보통 dict 하나로 오지만, 혹시 리스트로 오는 경우까지 방어적으로 처리한다.
+    """
+    nested = row.get("users")
+    if isinstance(nested, list):
+        return (nested[0] if nested else {}) or {}
+    return nested or {}
+
+
+def fetch_all_chat_history():
+    """선생님 대시보드용: chat_history를 users와 조인해서 최신순(내림차순)으로 불러온다.
+
+    '데이터 0건'과 '조회 자체가 실패함'을 구분해야 하므로 (성공 여부, 행 목록, 에러 메시지)
+    튜플로 돌려준다. 과거에는 모든 실패를 조용히 빈 리스트로 뭉개서(except: return []),
+    실제 쿼리/권한 오류가 나도 '학생 질문이 0건'인 것처럼 보이는 문제가 있었다.
+    """
     if not supabase:
-        return []
+        return False, [], "Supabase 연결 정보(SUPABASE_URL/SUPABASE_SERVICE_KEY)가 설정되지 않았습니다."
     try:
-        users_res = supabase.table("users").select("kakao_id").order("updated_at", desc=True).execute()
-        records = []
-        for row in (users_res.data or []):
-            data = load_student_data(row.get("kakao_id"))
-            if data:
-                records.append(data)
-        return records
-    except Exception:
-        return []
+        res = (
+            supabase.table("chat_history")
+            .select("*, users(nickname, student_grade)")
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return True, (res.data or []), ""
+    except Exception as e:
+        return False, [], str(e)
+
+
+def fetch_all_pass_records():
+    """선생님 대시보드용: pass_records를 users와 조인해서 최신순(내림차순)으로 불러온다."""
+    if not supabase:
+        return False, [], "Supabase 연결 정보(SUPABASE_URL/SUPABASE_SERVICE_KEY)가 설정되지 않았습니다."
+    try:
+        res = (
+            supabase.table("pass_records")
+            .select("*, users(nickname, student_grade)")
+            .order("completed_at", desc=True)
+            .execute()
+        )
+        return True, (res.data or []), ""
+    except Exception as e:
+        return False, [], str(e)
 
 
 def render_teacher_dashboard():
@@ -494,12 +526,43 @@ def render_teacher_dashboard():
 
     st.markdown("---")
 
-    records = list_all_student_records()
-    if not records:
-        st.info("아직 저장된 학생 데이터가 없습니다.")
+    st.markdown("#### 🎉 오늘 개념 PASS 통과 학생")
+    pass_ok, pass_rows, pass_err = fetch_all_pass_records()
+    if not pass_ok:
+        show_friendly_error(pass_err, "😥 PASS 기록을 불러오는 중 문제가 생겼어요.")
+    else:
+        today_str = datetime.now(KST).date().isoformat()
+
+        def _pass_row_to_dict(r):
+            u = _embedded_user(r)
+            return {
+                "닉네임": u.get("nickname") or "익명 학생",
+                "학년": u.get("student_grade") or "-",
+                "통과 단원": r.get("topic", "-"),
+                "통과 시각": _iso_to_kst_label(r.get("completed_at")),
+            }
+
+        today_pass_rows = [r for r in pass_rows if _iso_to_kst_label(r.get("completed_at"))[:10] == today_str]
+        if not today_pass_rows:
+            st.caption("오늘 아직 PASS한 학생이 없습니다.")
+        else:
+            st.dataframe([_pass_row_to_dict(r) for r in today_pass_rows], use_container_width=True, hide_index=True)
+        if pass_rows:
+            with st.expander(f"📜 전체 PASS 기록 보기 (총 {len(pass_rows)}건)"):
+                st.dataframe([_pass_row_to_dict(r) for r in pass_rows], use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    st.markdown("#### 📨 전체 질문/첨삭 기록 (최신순)")
+    chat_ok, chat_rows, chat_err = fetch_all_chat_history()
+    if not chat_ok:
+        show_friendly_error(chat_err, "😥 학생 질문 기록을 불러오는 중 문제가 생겼어요.")
+        return
+    if not chat_rows:
+        st.info("아직 등록된 학생 질문이 없습니다.")
         return
 
-    st.caption(f"총 {len(records)}명의 학생 데이터가 저장되어 있습니다.")
+    st.caption(f"총 {len(chat_rows)}건의 질문/첨삭 기록이 있습니다.")
 
     def _render_msg_list(msg_list):
         for msg in msg_list:
@@ -514,31 +577,44 @@ def render_teacher_dashboard():
                 st.write(msg["content"])
             st.markdown("---")
 
-    for data in records:
-        nickname = data.get("nickname", "익명 학생")
-        grade = data.get("student_grade", "-")
-        archive = data.get("question_archive", [])
-        pass_records = data.get("pass_records", [])
-        updated_at = data.get("updated_at", "")
-        q_count = len(archive)
+    def _truncate(text, n=40):
+        text = text or ""
+        return (text[:n] + "…") if len(text) > n else text
 
-        with st.expander(f"👤 {nickname} ({grade}) · 질문 {q_count}건 · PASS {len(pass_records)}건"):
-            st.caption(f"🆔 카카오 회원번호: {data.get('kakao_id', '-')} · 마지막 업데이트: {updated_at}")
+    def _preview_texts(messages):
+        """요약 표용으로 학생의 첫 질문과 AI의 마지막 답변만 짧게 잘라낸다."""
+        student_lines = [m.get("content", "") for m in messages if m.get("role") == "user" and m.get("content")]
+        ai_lines = [m.get("content", "") for m in messages if m.get("role") != "user" and m.get("content")]
+        student_preview = _truncate(student_lines[0]) if student_lines else "(사진만 업로드)"
+        ai_preview = _truncate(ai_lines[-1]) if ai_lines else "-"
+        return student_preview, ai_preview
 
-            st.markdown("##### 💮 PASS 받은 개념")
-            if pass_records:
-                for rec in pass_records:
-                    st.markdown(f"- **{rec.get('topic', '-')}** · {rec.get('completed_at', '-')}")
-            else:
-                st.caption("아직 PASS 기록이 없습니다.")
+    table_rows = []
+    for row in chat_rows:
+        user_info = _embedded_user(row)
+        messages = _deserialize_messages(row.get("messages"))
+        student_preview, ai_preview = _preview_texts(messages)
+        table_rows.append({
+            "닉네임": user_info.get("nickname") or "익명 학생",
+            "학년": user_info.get("student_grade") or "-",
+            "모드": row.get("feature", "-"),
+            "시각": _iso_to_kst_label(row.get("created_at")),
+            "학생 질문": student_preview,
+            "AI 답변": ai_preview,
+        })
+    st.dataframe(table_rows, use_container_width=True, hide_index=True)
 
-            st.markdown("##### 📁 질문 클리닉 / 오답 첨삭 - 오답노트")
-            if archive:
-                for entry in sorted(archive, key=lambda e: e.get("created_at", ""), reverse=True):
-                    st.caption(f"{entry.get('feature', '')} · {entry.get('created_at', '')}")
-                    _render_msg_list(entry.get("messages", []))
-            else:
-                st.caption("아직 대화 내역이 없습니다.")
+    st.markdown("##### 🔍 질문별 상세 보기 (사진·전체 대화)")
+    for row in chat_rows:
+        user_info = _embedded_user(row)
+        nickname = user_info.get("nickname") or "익명 학생"
+        grade = user_info.get("student_grade") or "-"
+        feature = row.get("feature", "-")
+        created_label = _iso_to_kst_label(row.get("created_at"))
+        messages = _deserialize_messages(row.get("messages"))
+        with st.expander(f"👤 {nickname} ({grade}) · {feature} · {created_label}"):
+            st.caption(f"🆔 카카오 회원번호: {row.get('kakao_id', '-')}")
+            _render_msg_list(messages)
 
 
 def send_telegram_alert(msg_type, content_preview):
