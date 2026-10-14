@@ -40,15 +40,15 @@ create table if not exists pass_records (
 );
 create index if not exists pass_records_kakao_id_idx on pass_records (kakao_id);
 
--- 4) daily_missions: 선생님이 '선생님 대시보드'에서 학년별로 지정하는 '오늘의 개념 범위'.
---    (grade, mission_date) 조합이 유니크해서, 저장할 때마다 자동으로 날짜별 기록이 쌓인다.
+-- 4) daily_missions: 선생님이 '선생님 대시보드'의 "🚀 오늘의 개념 PASS 출제" 카드에서
+--    학년별로 등록하는 미션. 유니크 제약이 없는 단순 로그성 테이블이라 출제할 때마다
+--    새 행이 쌓이고, 앱은 created_at이 오늘(KST)인 행 중 학년별로 가장 최근 것만 골라
+--    '오늘의 미션'으로 쓴다(app.py의 load_daily_pass_scope() 참고).
 create table if not exists daily_missions (
     id           uuid primary key default gen_random_uuid(),
-    grade        text not null,                 -- 중1/중2/중3/고1/고2/고3
-    mission_date date not null default current_date,
-    scope_text   text not null default '',
-    created_at   timestamptz not null default now(),
-    unique (grade, mission_date)
+    grade        text not null,                 -- 중1/중2/중3/고1(원종)/고1(수주,덕산)/고2/고3
+    concept_text text not null default '',
+    created_at   timestamptz not null default now()
 );
 
 -- ------------------------------------------------------------

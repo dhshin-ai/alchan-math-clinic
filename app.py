@@ -95,42 +95,53 @@ supabase = get_supabase_client()
 def load_daily_pass_scope():
     """선생님이 학년별로 지정해 둔 '오늘의 개념 범위'를 daily_missions 테이블에서 불러온다.
 
-    없는 학년이나 Supabase 미설정 시에는 빈 문자열로 채운 기본값을 돌려준다. 선생님이
-    '✍️ 직접 입력'으로 PASS_GRADE_LEVELS에 없는 학년명을 등록했을 수도 있으므로, 그런
-    키도 걸러내지 않고 그대로 담아 돌려준다(학생 화면의 학년 버튼 목록이 이 값으로 결정됨).
+    실제 Supabase 테이블은 (id, grade, concept_text, created_at)만 있고 날짜/유니크
+    제약이 없는 단순 로그성 테이블이다 - 출제할 때마다 새 행이 쌓이므로, 오늘 KST 기준
+    하루 범위의 행 중 학년별로 가장 최근(created_at 내림차순 첫 번째) 것만 골라 '오늘의
+    미션'으로 삼는다. 없는 학년이나 Supabase 미설정 시에는 빈 문자열로 채운 기본값을
+    돌려준다. 선생님이 '✍️ 직접 입력'으로 PASS_GRADE_LEVELS에 없는 학년명을 등록했을
+    수도 있으므로, 그런 키도 걸러내지 않고 그대로 담아 돌려준다(학생 화면의 학년 버튼
+    목록이 이 값으로 결정됨).
     """
     result = {grade: "" for grade in PASS_GRADE_LEVELS}
     if not supabase:
         return result
     try:
-        today_str = datetime.now(KST).date().isoformat()
+        day_start = datetime.now(KST).replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
         res = (
             supabase.table("daily_missions")
-            .select("grade, scope_text")
-            .eq("mission_date", today_str)
+            .select("grade, concept_text, created_at")
+            .gte("created_at", day_start.isoformat())
+            .lt("created_at", day_end.isoformat())
+            .order("created_at", desc=True)
             .execute()
         )
+        seen_grades = set()
         for row in (res.data or []):
             grade = row.get("grade")
-            if grade:
-                result[grade] = row.get("scope_text") or ""
+            if grade and grade not in seen_grades:
+                result[grade] = row.get("concept_text") or ""
+                seen_grades.add(grade)
     except Exception:
         pass
     return result
 
 
 def upsert_daily_mission(grade, mission_text):
-    """선생님 대시보드의 단일 '🚀 오늘의 개념 PASS 출제' 카드에서 학년 1개의 오늘
-    미션을 daily_missions에 upsert한다. (grade, mission_date) 조합이 유니크하므로
-    오늘 그 학년에 이미 저장된 행이 있으면 덮어쓰고, 없으면 새로 만든다.
+    """선생님 대시보드의 단일 '🚀 오늘의 개념 PASS 출제' 카드에서 학년 1개의 미션을
+    daily_missions에 저장한다.
+
+    실제 테이블 컬럼은 grade/concept_text뿐이고(id/created_at는 테이블 기본값으로
+    자동 채워짐) grade에 대한 유니크 제약이 없으므로 upsert가 아니라 매번 새 행을
+    INSERT한다 - 같은 학년을 오늘 여러 번 출제하면 여러 행이 쌓이고, 그중 가장 최근
+    것을 load_daily_pass_scope()가 '오늘의 미션'으로 골라 보여준다.
     """
     if not supabase:
         return False, "Supabase 연결 정보(SUPABASE_URL/SUPABASE_SERVICE_KEY)가 설정되지 않았습니다."
-    today_str = datetime.now(KST).date().isoformat()
     try:
-        supabase.table("daily_missions").upsert(
-            {"grade": grade, "mission_date": today_str, "scope_text": mission_text.strip()},
-            on_conflict="grade,mission_date",
+        supabase.table("daily_missions").insert(
+            {"grade": grade, "concept_text": mission_text.strip()}
         ).execute()
         return True, ""
     except Exception as e:
@@ -583,7 +594,7 @@ def render_teacher_dashboard():
                 st.success(f"✅ {mission_grade} 미션을 출제했어요! 학생들에게 아래 QR코드를 보여주세요.")
                 st.rerun()
             else:
-                show_friendly_error(mission_err, "😥 미션 저장 중 문제가 생겼어요.")
+                st.error(f"😥 미션 저장 중 문제가 생겼어요.\n\n상세 에러: {mission_err}")
 
     just_set = st.session_state.get("quick_mission_just_set")
     if just_set:
