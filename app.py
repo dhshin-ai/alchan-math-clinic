@@ -60,6 +60,11 @@ except ImportError:
     create_client = None
     Client = None
 
+try:
+    import qrcode
+except ImportError:
+    qrcode = None
+
 
 @st.cache_resource
 def get_supabase_client():
@@ -130,6 +135,76 @@ def save_daily_pass_scope(scope_by_grade):
             ).execute()
         except Exception:
             pass
+
+
+def upsert_daily_mission(grade, mission_text):
+    """선생님 대시보드 '🚀 3초 출제' 폼에서 학년 1개만 빠르게 등록할 때 쓴다.
+
+    save_daily_pass_scope()는 폼에 올라온 6개 학년을 한 번에 저장하는 용도고,
+    이건 수업 중 '지금 바로 이 학년만' 출제할 때 쓰는 가벼운 버전이다. 같은
+    (grade, mission_date) 유니크 키를 쓰므로 두 기능은 같은 데이터를 공유한다.
+    """
+    if not supabase:
+        return False, "Supabase 연결 정보(SUPABASE_URL/SUPABASE_SERVICE_KEY)가 설정되지 않았습니다."
+    today_str = datetime.now(KST).date().isoformat()
+    try:
+        supabase.table("daily_missions").upsert(
+            {"grade": grade, "mission_date": today_str, "scope_text": mission_text.strip()},
+            on_conflict="grade,mission_date",
+        ).execute()
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+def generate_qr_png_bytes(url):
+    """학생들이 폰 카메라로 찍으면 바로 접속되는 큰 QR코드 PNG를 만든다.
+
+    qrcode 라이브러리가 아직 설치/배포되지 않은 환경(requirements.txt 반영 전)을
+    대비해 qrcode가 없으면 None을 돌려주고, 호출하는 쪽에서 안내 문구로 대체한다.
+    """
+    if qrcode is None or not url:
+        return None
+    qr = qrcode.QRCode(
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=10,
+        border=4,
+    )
+    qr.add_data(url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def fetch_pass_records_for_date(date_str, grade="전체"):
+    """선생님 대시보드 '📊 개념 PASS 실시간 현황'용: 특정 날짜(KST 기준 하루)의
+    pass_records를 users와 조인해서 최신순으로 가져온다. grade가 '전체'가 아니면
+    그 학년(PASS 학년 = users.pass_grade)만 남긴다.
+
+    '데이터 0건'과 '조회 실패'를 구분해야 하므로 (성공 여부, 행 목록, 에러 메시지)
+    튜플로 돌려준다.
+    """
+    if not supabase:
+        return False, [], "Supabase 연결 정보(SUPABASE_URL/SUPABASE_SERVICE_KEY)가 설정되지 않았습니다."
+    try:
+        day_start = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=KST)
+        day_end = day_start + timedelta(days=1)
+        res = (
+            supabase.table("pass_records")
+            .select("*, users(nickname, pass_grade)")
+            .gte("completed_at", day_start.isoformat())
+            .lt("completed_at", day_end.isoformat())
+            .order("completed_at", desc=True)
+            .execute()
+        )
+        rows = res.data or []
+        if grade and grade != "전체":
+            rows = [r for r in rows if _embedded_user(r).get("pass_grade") == grade]
+        return True, rows, ""
+    except Exception as e:
+        return False, [], str(e)
 
 
 def get_kakao_login_url(state=None):
@@ -410,22 +485,6 @@ def fetch_all_chat_history():
         return False, [], str(e)
 
 
-def fetch_all_pass_records():
-    """선생님 대시보드용: pass_records를 users와 조인해서 최신순(내림차순)으로 불러온다."""
-    if not supabase:
-        return False, [], "Supabase 연결 정보(SUPABASE_URL/SUPABASE_SERVICE_KEY)가 설정되지 않았습니다."
-    try:
-        res = (
-            supabase.table("pass_records")
-            .select("*, users(nickname, student_grade)")
-            .order("completed_at", desc=True)
-            .execute()
-        )
-        return True, (res.data or []), ""
-    except Exception as e:
-        return False, [], str(e)
-
-
 def render_teacher_dashboard():
     """학생들에게는 보이지 않는, 비밀번호로만 들어오는 선생님 전용 대시보드.
 
@@ -447,6 +506,52 @@ def render_teacher_dashboard():
             st.session_state.teacher_mode = False
             st.session_state.pop("teacher_pw_input", None)
             st.rerun()
+
+    st.markdown("---")
+
+    st.markdown("#### 🚀 오늘의 개념 PASS 출제 (3초 출제)")
+    st.caption("학년과 미션 내용만 입력하고 출제하면, 학생들이 폰카메라로 찍어 바로 들어올 QR코드가 뜹니다.")
+    with st.form("quick_mission_form", clear_on_submit=True):
+        qc1, qc2 = st.columns([1, 2])
+        with qc1:
+            quick_grade = st.selectbox("대상 학년", PASS_GRADE_LEVELS, key="quick_mission_grade")
+        with qc2:
+            quick_mission = st.text_input(
+                "미션 내용", placeholder="예: 근의 공식 설명하기", key="quick_mission_text"
+            )
+        quick_submitted = st.form_submit_button(
+            "🚀 바로 출제하기", use_container_width=True, type="primary"
+        )
+
+    if quick_submitted:
+        if not quick_mission.strip():
+            st.warning("미션 내용을 입력해 주세요.")
+        else:
+            mission_ok, mission_err = upsert_daily_mission(quick_grade, quick_mission)
+            if mission_ok:
+                st.session_state["quick_mission_just_set"] = {
+                    "grade": quick_grade,
+                    "mission": quick_mission.strip(),
+                }
+                st.success(f"✅ {quick_grade} 미션을 출제했어요! 학생들에게 아래 QR코드를 보여주세요.")
+            else:
+                show_friendly_error(mission_err, "😥 미션 저장 중 문제가 생겼어요.")
+
+    just_set = st.session_state.get("quick_mission_just_set")
+    if just_set:
+        st.info(f"📌 현재 출제: **{just_set['grade']} - {just_set['mission']}**")
+        app_url = st.secrets.get("APP_URL", "") or KAKAO_REDIRECT_URI
+        qr_bytes = generate_qr_png_bytes(app_url)
+        if qr_bytes:
+            qr_c1, qr_c2, qr_c3 = st.columns([1, 2, 1])
+            with qr_c2:
+                st.image(qr_bytes, use_container_width=True)
+            st.caption(f"📱 학생들이 이 QR을 카메라로 찍으면 바로 접속돼요 → {app_url}")
+        else:
+            st.warning(
+                "QR코드 생성 라이브러리(qrcode)가 아직 이 환경에 설치되지 않았어요. "
+                f"학생들에게 이 주소를 직접 알려주세요 → {app_url}"
+            )
 
     st.markdown("---")
 
@@ -526,95 +631,102 @@ def render_teacher_dashboard():
 
     st.markdown("---")
 
-    st.markdown("#### 🎉 오늘 개념 PASS 통과 학생")
-    pass_ok, pass_rows, pass_err = fetch_all_pass_records()
-    if not pass_ok:
-        show_friendly_error(pass_err, "😥 PASS 기록을 불러오는 중 문제가 생겼어요.")
-    else:
-        today_str = datetime.now(KST).date().isoformat()
-
-        def _pass_row_to_dict(r):
-            u = _embedded_user(r)
-            return {
-                "닉네임": u.get("nickname") or "익명 학생",
-                "학년": u.get("student_grade") or "-",
-                "통과 단원": r.get("topic", "-"),
-                "통과 시각": _iso_to_kst_label(r.get("completed_at")),
-            }
-
-        today_pass_rows = [r for r in pass_rows if _iso_to_kst_label(r.get("completed_at"))[:10] == today_str]
-        if not today_pass_rows:
-            st.caption("오늘 아직 PASS한 학생이 없습니다.")
-        else:
-            st.dataframe([_pass_row_to_dict(r) for r in today_pass_rows], use_container_width=True, hide_index=True)
-        if pass_rows:
-            with st.expander(f"📜 전체 PASS 기록 보기 (총 {len(pass_rows)}건)"):
-                st.dataframe([_pass_row_to_dict(r) for r in pass_rows], use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
     st.markdown("#### 📨 전체 질문/첨삭 기록 (최신순)")
     chat_ok, chat_rows, chat_err = fetch_all_chat_history()
     if not chat_ok:
         show_friendly_error(chat_err, "😥 학생 질문 기록을 불러오는 중 문제가 생겼어요.")
-        return
-    if not chat_rows:
+    elif not chat_rows:
         st.info("아직 등록된 학생 질문이 없습니다.")
-        return
+    else:
+        st.caption(f"총 {len(chat_rows)}건의 질문/첨삭 기록이 있습니다.")
 
-    st.caption(f"총 {len(chat_rows)}건의 질문/첨삭 기록이 있습니다.")
+        def _render_msg_list(msg_list):
+            for msg in msg_list:
+                role_label = "👤 학생" if msg.get("role") == "user" else "🤖 AI"
+                st.markdown(f"**{role_label}**")
+                if msg.get("images"):
+                    cols = st.columns(len(msg["images"]))
+                    for col, img in zip(cols, msg["images"]):
+                        with col:
+                            st.image(img["bytes"], width=160)
+                if msg.get("content"):
+                    st.write(msg["content"])
+                st.markdown("---")
 
-    def _render_msg_list(msg_list):
-        for msg in msg_list:
-            role_label = "👤 학생" if msg.get("role") == "user" else "🤖 AI"
-            st.markdown(f"**{role_label}**")
-            if msg.get("images"):
-                cols = st.columns(len(msg["images"]))
-                for col, img in zip(cols, msg["images"]):
-                    with col:
-                        st.image(img["bytes"], width=160)
-            if msg.get("content"):
-                st.write(msg["content"])
-            st.markdown("---")
+        def _truncate(text, n=40):
+            text = text or ""
+            return (text[:n] + "…") if len(text) > n else text
 
-    def _truncate(text, n=40):
-        text = text or ""
-        return (text[:n] + "…") if len(text) > n else text
+        def _preview_texts(messages):
+            """요약 표용으로 학생의 첫 질문과 AI의 마지막 답변만 짧게 잘라낸다."""
+            student_lines = [m.get("content", "") for m in messages if m.get("role") == "user" and m.get("content")]
+            ai_lines = [m.get("content", "") for m in messages if m.get("role") != "user" and m.get("content")]
+            student_preview = _truncate(student_lines[0]) if student_lines else "(사진만 업로드)"
+            ai_preview = _truncate(ai_lines[-1]) if ai_lines else "-"
+            return student_preview, ai_preview
 
-    def _preview_texts(messages):
-        """요약 표용으로 학생의 첫 질문과 AI의 마지막 답변만 짧게 잘라낸다."""
-        student_lines = [m.get("content", "") for m in messages if m.get("role") == "user" and m.get("content")]
-        ai_lines = [m.get("content", "") for m in messages if m.get("role") != "user" and m.get("content")]
-        student_preview = _truncate(student_lines[0]) if student_lines else "(사진만 업로드)"
-        ai_preview = _truncate(ai_lines[-1]) if ai_lines else "-"
-        return student_preview, ai_preview
+        table_rows = []
+        for row in chat_rows:
+            user_info = _embedded_user(row)
+            messages = _deserialize_messages(row.get("messages"))
+            student_preview, ai_preview = _preview_texts(messages)
+            table_rows.append({
+                "닉네임": user_info.get("nickname") or "익명 학생",
+                "학년": user_info.get("student_grade") or "-",
+                "모드": row.get("feature", "-"),
+                "시각": _iso_to_kst_label(row.get("created_at")),
+                "학생 질문": student_preview,
+                "AI 답변": ai_preview,
+            })
+        st.dataframe(table_rows, use_container_width=True, hide_index=True)
 
-    table_rows = []
-    for row in chat_rows:
-        user_info = _embedded_user(row)
-        messages = _deserialize_messages(row.get("messages"))
-        student_preview, ai_preview = _preview_texts(messages)
-        table_rows.append({
-            "닉네임": user_info.get("nickname") or "익명 학생",
-            "학년": user_info.get("student_grade") or "-",
-            "모드": row.get("feature", "-"),
-            "시각": _iso_to_kst_label(row.get("created_at")),
-            "학생 질문": student_preview,
-            "AI 답변": ai_preview,
-        })
-    st.dataframe(table_rows, use_container_width=True, hide_index=True)
+        st.markdown("##### 🔍 질문별 상세 보기 (사진·전체 대화)")
+        for row in chat_rows:
+            user_info = _embedded_user(row)
+            nickname = user_info.get("nickname") or "익명 학생"
+            grade = user_info.get("student_grade") or "-"
+            feature = row.get("feature", "-")
+            created_label = _iso_to_kst_label(row.get("created_at"))
+            messages = _deserialize_messages(row.get("messages"))
+            with st.expander(f"👤 {nickname} ({grade}) · {feature} · {created_label}"):
+                st.caption(f"🆔 카카오 회원번호: {row.get('kakao_id', '-')}")
+                _render_msg_list(messages)
 
-    st.markdown("##### 🔍 질문별 상세 보기 (사진·전체 대화)")
-    for row in chat_rows:
-        user_info = _embedded_user(row)
-        nickname = user_info.get("nickname") or "익명 학생"
-        grade = user_info.get("student_grade") or "-"
-        feature = row.get("feature", "-")
-        created_label = _iso_to_kst_label(row.get("created_at"))
-        messages = _deserialize_messages(row.get("messages"))
-        with st.expander(f"👤 {nickname} ({grade}) · {feature} · {created_label}"):
-            st.caption(f"🆔 카카오 회원번호: {row.get('kakao_id', '-')}")
-            _render_msg_list(messages)
+    st.markdown("---")
+
+    st.markdown("#### 📊 개념 PASS 실시간 현황")
+    report_c1, report_c2 = st.columns([1, 1])
+    with report_c1:
+        report_date = st.date_input(
+            "날짜", value=datetime.now(KST).date(), key="pass_report_date"
+        )
+    with report_c2:
+        report_grade = st.selectbox(
+            "학년", ["전체"] + PASS_GRADE_LEVELS, key="pass_report_grade"
+        )
+
+    report_ok, report_rows, report_err = fetch_pass_records_for_date(
+        report_date.isoformat(), report_grade
+    )
+    if not report_ok:
+        show_friendly_error(report_err, "😥 PASS 현황을 불러오는 중 문제가 생겼어요.")
+    elif not report_rows:
+        st.info("조건에 맞는 PASS 기록이 없습니다.")
+    else:
+        st.caption(f"총 {len(report_rows)}건")
+        st.dataframe(
+            [
+                {
+                    "닉네임": _embedded_user(r).get("nickname") or "익명 학생",
+                    "학년": _embedded_user(r).get("pass_grade") or "-",
+                    "통과 시각": _iso_to_kst_label(r.get("completed_at"), fmt="%H:%M"),
+                    "통과 미션": r.get("topic", "-"),
+                }
+                for r in report_rows
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 def send_telegram_alert(msg_type, content_preview):
@@ -2205,20 +2317,41 @@ def render_pass_tab():
     st.markdown("---")
 
     if not st.session_state.pass_topic:
-        default_index = (
-            PASS_GRADE_LEVELS.index(st.session_state.pass_grade)
-            if st.session_state.pass_grade in PASS_GRADE_LEVELS
-            else 0
-        )
-        selected_grade = st.selectbox(
-            "자신의 학년을 선택해줘",
-            PASS_GRADE_LEVELS,
-            index=default_index,
-            key="pass_grade_select",
-        )
-        st.session_state.pass_grade = selected_grade
+        today_scope_map = load_daily_pass_scope()
+        available_grades = [g for g in PASS_GRADE_LEVELS if today_scope_map.get(g, "").strip()]
 
-        today_scope = load_daily_pass_scope().get(selected_grade, "")
+        if available_grades:
+            st.markdown("##### 🙋 자신의 학년을 눌러줘")
+            if st.session_state.pass_grade not in available_grades:
+                st.session_state.pass_grade = available_grades[0]
+            grade_cols = st.columns(len(available_grades))
+            for col, grade in zip(grade_cols, available_grades):
+                with col:
+                    is_selected = grade == st.session_state.pass_grade
+                    if st.button(
+                        grade,
+                        key=f"pass_grade_btn_{grade}",
+                        use_container_width=True,
+                        type="primary" if is_selected else "secondary",
+                    ):
+                        st.session_state.pass_grade = grade
+                        st.rerun()
+            selected_grade = st.session_state.pass_grade
+        else:
+            default_index = (
+                PASS_GRADE_LEVELS.index(st.session_state.pass_grade)
+                if st.session_state.pass_grade in PASS_GRADE_LEVELS
+                else 0
+            )
+            selected_grade = st.selectbox(
+                "자신의 학년을 선택해줘",
+                PASS_GRADE_LEVELS,
+                index=default_index,
+                key="pass_grade_select",
+            )
+            st.session_state.pass_grade = selected_grade
+
+        today_scope = today_scope_map.get(selected_grade, "")
 
         if today_scope:
             st.info(f"📌 **오늘의 미션: {selected_grade} - {today_scope}**")
