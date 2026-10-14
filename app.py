@@ -119,33 +119,10 @@ def load_daily_pass_scope():
     return result
 
 
-def save_daily_pass_scope(scope_by_grade):
-    """학년별 '오늘의 개념 범위'를 daily_missions 테이블에 upsert해, 모든 학생의
-    PASS 탭에 그대로 반영되게 한다. (grade, mission_date) 조합이 유니크하므로
-    오늘 이미 저장된 행이 있으면 덮어쓰고, 없으면 새로 만든다."""
-    if not supabase:
-        return
-    today_str = datetime.now(KST).date().isoformat()
-    for grade in PASS_GRADE_LEVELS:
-        try:
-            supabase.table("daily_missions").upsert(
-                {
-                    "grade": grade,
-                    "mission_date": today_str,
-                    "scope_text": str(scope_by_grade.get(grade, "")).strip(),
-                },
-                on_conflict="grade,mission_date",
-            ).execute()
-        except Exception:
-            pass
-
-
 def upsert_daily_mission(grade, mission_text):
-    """선생님 대시보드 '🚀 3초 출제' 폼에서 학년 1개만 빠르게 등록할 때 쓴다.
-
-    save_daily_pass_scope()는 폼에 올라온 6개 학년을 한 번에 저장하는 용도고,
-    이건 수업 중 '지금 바로 이 학년만' 출제할 때 쓰는 가벼운 버전이다. 같은
-    (grade, mission_date) 유니크 키를 쓰므로 두 기능은 같은 데이터를 공유한다.
+    """선생님 대시보드의 단일 '🚀 오늘의 개념 PASS 출제' 카드에서 학년 1개의 오늘
+    미션을 daily_missions에 upsert한다. (grade, mission_date) 조합이 유니크하므로
+    오늘 그 학년에 이미 저장된 행이 있으면 덮어쓰고, 없으면 새로 만든다.
     """
     if not supabase:
         return False, "Supabase 연결 정보(SUPABASE_URL/SUPABASE_SERVICE_KEY)가 설정되지 않았습니다."
@@ -512,47 +489,99 @@ def render_teacher_dashboard():
 
     st.markdown("---")
 
-    st.markdown("#### 🚀 오늘의 개념 PASS 출제 (3초 출제)")
-    st.caption("학년과 미션 내용만 입력하고 출제하면, 학생들이 폰카메라로 찍어 바로 들어올 QR코드가 뜹니다.")
-    with st.form("quick_mission_form", clear_on_submit=True):
-        qc1, qc2 = st.columns([1, 2])
-        with qc1:
-            quick_grade_select = st.selectbox(
-                "대상 학년",
-                PASS_GRADE_LEVELS + [PASS_GRADE_CUSTOM_OPTION],
-                key="quick_mission_grade",
-            )
-            quick_grade_custom = st.text_input(
-                "학년을 직접 입력 (위에서 '직접 입력' 선택 시에만 사용)",
-                placeholder="예: 고1(신규반)",
-                key="quick_mission_grade_custom",
-            )
-        with qc2:
-            quick_mission = st.text_input(
-                "미션 내용", placeholder="예: 근의 공식 설명하기", key="quick_mission_text"
-            )
-        quick_submitted = st.form_submit_button(
-            "🚀 바로 출제하기", use_container_width=True, type="primary"
+    st.markdown("#### 🚀 오늘의 개념 PASS 출제")
+    st.caption("학년을 고르고 미션 내용을 입력한 뒤 출제하면, 학생들이 찍고 들어올 QR코드가 바로 아래에 뜹니다.")
+
+    mission_grade_select = st.selectbox(
+        "① 대상 학년",
+        PASS_GRADE_LEVELS + [PASS_GRADE_CUSTOM_OPTION],
+        key="mission_grade_select",
+    )
+    mission_grade_custom = ""
+    if mission_grade_select == PASS_GRADE_CUSTOM_OPTION:
+        mission_grade_custom = st.text_input(
+            "학년 직접 입력", placeholder="예: 고1(신규반)", key="mission_grade_custom"
         )
 
-    if quick_submitted:
-        quick_grade = (
-            quick_grade_custom.strip()
-            if quick_grade_select == PASS_GRADE_CUSTOM_OPTION
-            else quick_grade_select
+    # mission_text_input 위젯이 생성된 '이후'(아래 사진 추출/출제 처리 코드)에는 그 키의
+    # session_state를 직접 바꿀 수 없다(Streamlit 제약) - 대신 _mission_text_pending에
+    # 적어두고 st.rerun()하면, 다음 실행에서 위젯이 생성되기 '전'인 바로 이 지점에서
+    # 안전하게 반영된다.
+    if "_mission_text_pending" in st.session_state:
+        st.session_state["mission_text_input"] = st.session_state.pop("_mission_text_pending")
+
+    mission_text = st.text_area(
+        "② 미션 내용",
+        key="mission_text_input",
+        height=100,
+        placeholder="예: 근의 공식 증명하기",
+    )
+
+    with st.expander("📸 ③ 칠판 판서 사진으로 채우기 (선택)"):
+        st.caption("칠판 사진을 올리고 'AI 추출'을 누르면 위 ② 미션 내용 칸이 자동으로 채워져요. 저장 전에 한 번 확인해 주세요!")
+        board_photo = st.file_uploader(
+            "오늘 칠판 판서 사진 업로드", type=["jpg", "jpeg", "png"], key="mission_board_photo"
         )
-        if quick_grade_select == PASS_GRADE_CUSTOM_OPTION and not quick_grade_custom.strip():
+        if st.button("🔍 AI로 미션 내용 추출하기", key="mission_extract_btn", disabled=not board_photo):
+            if not api_key:
+                st.error("API 키가 설정되지 않았습니다.")
+            else:
+                client = anthropic.Anthropic(api_key=api_key)
+                photo_bytes = board_photo.getvalue()
+                with st.spinner("칠판 판서를 분석하는 중..."):
+                    try:
+                        response = client.messages.create(
+                            model=MODEL_NAME,
+                            max_tokens=400,
+                            messages=[{
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": board_photo.type,
+                                            "data": base64.b64encode(photo_bytes).decode("utf-8"),
+                                        },
+                                    },
+                                    {
+                                        "type": "text",
+                                        "text": (
+                                            "이 칠판 판서 사진 속 핵심 수학 개념·공식·증명 포인트를 학생들의 "
+                                            "'오늘의 개념 PASS' 구술시험 범위로 쓸 수 있게 1~2문장으로 간결하게 "
+                                            "요약해라. 다른 설명 없이 요약 내용만 출력해라."
+                                        ),
+                                    },
+                                ],
+                            }],
+                        )
+                        extracted = get_response_text(response)
+                        st.session_state["_mission_text_pending"] = extracted
+                        st.success("✅ 칠판 판서에서 핵심 개념을 추출했어요! 위 ② 미션 내용을 확인하고 출제해 주세요.")
+                        st.rerun()
+                    except Exception as e:
+                        show_friendly_error(e, "😥 칠판 판서 분석 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요.")
+
+    if st.button("🚀 ④ 출제 및 QR코드 생성", key="mission_submit_btn", use_container_width=True, type="primary"):
+        mission_grade = (
+            mission_grade_custom.strip()
+            if mission_grade_select == PASS_GRADE_CUSTOM_OPTION
+            else mission_grade_select
+        )
+        if mission_grade_select == PASS_GRADE_CUSTOM_OPTION and not mission_grade_custom.strip():
             st.warning("직접 입력을 선택했다면 학년명을 입력해 주세요.")
-        elif not quick_mission.strip():
+        elif not mission_text.strip():
             st.warning("미션 내용을 입력해 주세요.")
         else:
-            mission_ok, mission_err = upsert_daily_mission(quick_grade, quick_mission)
+            mission_ok, mission_err = upsert_daily_mission(mission_grade, mission_text)
             if mission_ok:
                 st.session_state["quick_mission_just_set"] = {
-                    "grade": quick_grade,
-                    "mission": quick_mission.strip(),
+                    "grade": mission_grade,
+                    "mission": mission_text.strip(),
                 }
-                st.success(f"✅ {quick_grade} 미션을 출제했어요! 학생들에게 아래 QR코드를 보여주세요.")
+                st.session_state["_mission_text_pending"] = ""
+                st.success(f"✅ {mission_grade} 미션을 출제했어요! 학생들에게 아래 QR코드를 보여주세요.")
+                st.rerun()
             else:
                 show_friendly_error(mission_err, "😥 미션 저장 중 문제가 생겼어요.")
 
@@ -571,82 +600,6 @@ def render_teacher_dashboard():
                 "QR코드 생성 라이브러리(qrcode)가 아직 이 환경에 설치되지 않았어요. "
                 f"학생들에게 이 주소를 직접 알려주세요 → {app_url}"
             )
-
-    st.markdown("---")
-
-    st.markdown("#### 📌 학년별 오늘의 개념 범위 설정")
-    st.caption("여기에 입력한 범위가 학생들의 '개념 PASS' 탭에 그대로 노출되고, AI 구술 질문도 이 범위 안에서만 나갑니다.")
-
-    st.markdown("##### 📸 칠판 판서 사진으로 자동 추출 (선택)")
-    st.caption("수업 후 칠판 사진을 올리면 AI가 핵심 개념을 요약해서 아래 해당 학년 텍스트 칸에 채워줘요. 저장 전에 한 번 확인해 주세요!")
-    board_col1, board_col2 = st.columns([1, 2])
-    with board_col1:
-        board_grade = st.selectbox("어느 학년 칠판 사진인가요?", PASS_GRADE_LEVELS, key="board_photo_grade")
-    with board_col2:
-        board_photo = st.file_uploader(
-            "📸 오늘 칠판 판서 사진 올리기", type=["jpg", "jpeg", "png"], key="board_photo_upload"
-        )
-
-    if st.button("🔍 AI로 핵심 개념 추출하기", key="extract_board_btn", disabled=not board_photo):
-        if not api_key:
-            st.error("API 키가 설정되지 않았습니다.")
-        else:
-            client = anthropic.Anthropic(api_key=api_key)
-            photo_bytes = board_photo.getvalue()
-            with st.spinner("칠판 판서를 분석하는 중..."):
-                try:
-                    response = client.messages.create(
-                        model=MODEL_NAME,
-                        max_tokens=400,
-                        messages=[{
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": board_photo.type,
-                                        "data": base64.b64encode(photo_bytes).decode("utf-8"),
-                                    },
-                                },
-                                {
-                                    "type": "text",
-                                    "text": (
-                                        "이 칠판 판서 사진 속 핵심 수학 개념·공식·증명 포인트를 학생들의 "
-                                        "'오늘의 개념 PASS' 구술시험 범위로 쓸 수 있게 1~2문장으로 간결하게 "
-                                        "요약해라. 다른 설명 없이 요약 내용만 출력해라."
-                                    ),
-                                },
-                            ],
-                        }],
-                    )
-                    extracted = get_response_text(response)
-                    # 아래 scope_input_{grade} text_area가 생성되기 전에 세션 상태를 먼저
-                    # 채워 두면, 다음 렌더에서 그 값이 입력창의 현재 값으로 그대로 반영된다.
-                    st.session_state[f"scope_input_{board_grade}"] = extracted
-                    st.success(f"✅ {board_grade} 칠판 판서에서 핵심 개념을 추출했어요! 아래에서 확인하고 저장해 주세요.")
-                    st.rerun()
-                except Exception as e:
-                    show_friendly_error(e, "😥 칠판 판서 분석 중 문제가 생겼어요. 잠시 후 다시 시도해 주세요.")
-
-    st.markdown("---")
-
-    current_scope = load_daily_pass_scope()
-    with st.form("daily_pass_scope_form"):
-        new_scope = {}
-        scope_cols = st.columns(3)
-        for i, grade in enumerate(PASS_GRADE_LEVELS):
-            with scope_cols[i % 3]:
-                new_scope[grade] = st.text_area(
-                    grade,
-                    value=current_scope.get(grade, ""),
-                    height=100,
-                    key=f"scope_input_{grade}",
-                    placeholder="예: 나머지정리와 인수정리",
-                )
-        if st.form_submit_button("💾 오늘의 범위 저장하기", use_container_width=True):
-            save_daily_pass_scope(new_scope)
-            st.success("✅ 오늘의 개념 범위를 저장했습니다! 학생 화면에 바로 반영됩니다.")
 
     st.markdown("---")
 
