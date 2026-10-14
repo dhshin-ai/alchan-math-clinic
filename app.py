@@ -1,6 +1,5 @@
 import base64
 import io
-import json
 import os
 import re
 import ast
@@ -19,7 +18,7 @@ from PIL import Image, ImageDraw, ImageFont
 st.set_page_config(
     page_title="알찬학원 신다혜 쌤의 1:1 수학 클리닉",
     page_icon="✏️",
-    layout="wide",
+    layout="centered",  # 모바일 앱 셸 - 480px 폭으로 CSS에서 한 번 더 강제한다
     initial_sidebar_state="collapsed",
 )
 
@@ -50,32 +49,87 @@ except Exception:
 
 KAKAO_CLIENT_ID = st.secrets.get("KAKAO_CLIENT_ID", "")
 KAKAO_REDIRECT_URI = st.secrets.get("KAKAO_REDIRECT_URI", "https://math.studyground123.com/")
-STUDENT_DATA_DIR = "student_data"
 TEACHER_DASHBOARD_PASSWORD = st.secrets.get("TEACHER_DASHBOARD_PASSWORD", "dahye1234")
 
 PASS_GRADE_LEVELS = ["중1", "중2", "중3", "고1", "고2", "고3"]
-DAILY_PASS_SCOPE_FILE = "daily_pass_scope.json"
-MODE_OPTIONS = ["❓ 질문 클리닉", "🔍 오답 첨삭", "💮 개념 PASS", "👤 마이페이지"]
+MODE_OPTIONS = ["❓ 질문", "🔍 첨삭", "💮 개념PASS", "👤 마이페이지"]
+
+try:
+    from supabase import create_client, Client  # noqa: F401 (Client는 타입 표기용)
+except ImportError:
+    create_client = None
+    Client = None
+
+
+@st.cache_resource
+def get_supabase_client():
+    """Supabase 클라이언트를 프로세스당 한 번만 만들어 재사용한다 (st.cache_resource).
+
+    SUPABASE_SERVICE_KEY는 RLS(행 단위 보안)를 우회하는 service_role 키다. 이 앱은
+    Streamlit 서버에서만 실행되고 이 키가 학생의 브라우저로 전달될 일이 없으므로
+    (카카오 로그인은 이 앱과 별개의 OAuth라 Supabase Auth/RLS 정책을 쓰지 않는다),
+    서버 프로세스 안에서만 쓰는 이 키 하나로 충분하다. secrets.toml 또는 Streamlit
+    Cloud의 Secrets에만 넣고 절대 코드/Git에 커밋하지 않는다.
+    """
+    if create_client is None:
+        return None
+    url = st.secrets.get("SUPABASE_URL", "")
+    key = st.secrets.get("SUPABASE_SERVICE_KEY", "")
+    if not url or not key:
+        return None
+    try:
+        return create_client(url, key)
+    except Exception:
+        return None
+
+
+supabase = get_supabase_client()
 
 
 def load_daily_pass_scope():
-    """선생님이 학년별로 지정해 둔 '오늘의 개념 범위'를 불러온다. 없는 학년은 빈 문자열."""
+    """선생님이 학년별로 지정해 둔 '오늘의 개념 범위'를 daily_missions 테이블에서 불러온다.
+
+    없는 학년이나 Supabase 미설정 시에는 빈 문자열로 채운 기본값을 돌려준다.
+    """
+    result = {grade: "" for grade in PASS_GRADE_LEVELS}
+    if not supabase:
+        return result
     try:
-        with open(DAILY_PASS_SCOPE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        data = {}
-    return {grade: str(data.get(grade, "")).strip() for grade in PASS_GRADE_LEVELS}
+        today_str = datetime.now(KST).date().isoformat()
+        res = (
+            supabase.table("daily_missions")
+            .select("grade, scope_text")
+            .eq("mission_date", today_str)
+            .execute()
+        )
+        for row in (res.data or []):
+            grade = row.get("grade")
+            if grade in result:
+                result[grade] = row.get("scope_text") or ""
+    except Exception:
+        pass
+    return result
 
 
 def save_daily_pass_scope(scope_by_grade):
-    """학년별 '오늘의 개념 범위'를 파일로 저장해, 모든 학생의 PASS 탭에 그대로 반영되게 한다."""
-    data = {grade: str(scope_by_grade.get(grade, "")).strip() for grade in PASS_GRADE_LEVELS}
-    try:
-        with open(DAILY_PASS_SCOPE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-    except Exception:
-        pass
+    """학년별 '오늘의 개념 범위'를 daily_missions 테이블에 upsert해, 모든 학생의
+    PASS 탭에 그대로 반영되게 한다. (grade, mission_date) 조합이 유니크하므로
+    오늘 이미 저장된 행이 있으면 덮어쓰고, 없으면 새로 만든다."""
+    if not supabase:
+        return
+    today_str = datetime.now(KST).date().isoformat()
+    for grade in PASS_GRADE_LEVELS:
+        try:
+            supabase.table("daily_missions").upsert(
+                {
+                    "grade": grade,
+                    "mission_date": today_str,
+                    "scope_text": str(scope_by_grade.get(grade, "")).strip(),
+                },
+                on_conflict="grade,mission_date",
+            ).execute()
+        except Exception:
+            pass
 
 
 def get_kakao_login_url(state=None):
@@ -131,14 +185,8 @@ def exchange_kakao_code(code):
     return kakao_id, nickname
 
 
-def _student_data_path(kakao_id):
-    os.makedirs(STUDENT_DATA_DIR, exist_ok=True)
-    safe_id = re.sub(r"[^0-9A-Za-z_-]", "_", str(kakao_id))
-    return os.path.join(STUDENT_DATA_DIR, f"{safe_id}.json")
-
-
 def _serialize_messages(messages):
-    """메시지 리스트(clinic/review/pass 공용)를 JSON으로 저장 가능한 형태로 변환한다 (이미지는 base64)."""
+    """메시지 리스트(clinic/review 공용)를 JSON/JSONB로 저장 가능한 형태로 변환한다 (이미지는 base64)."""
     out = []
     for msg in messages:
         m = {"role": msg["role"], "content": msg["content"]}
@@ -154,9 +202,9 @@ def _serialize_messages(messages):
 
 
 def _deserialize_messages(raw_messages):
-    """저장된 JSON을 다시 메시지 리스트 형태(이미지는 bytes)로 복원한다."""
+    """Supabase JSONB에서 읽은 메시지 리스트를 다시 앱 형태(이미지는 bytes)로 복원한다."""
     out = []
-    for msg in raw_messages:
+    for msg in raw_messages or []:
         m = {"role": msg["role"], "content": msg["content"]}
         if msg.get("api_text"):
             m["api_text"] = msg["api_text"]
@@ -169,135 +217,132 @@ def _deserialize_messages(raw_messages):
     return out
 
 
-def _serialize_archive(archive):
-    """question_archive(카드별 messages 포함)를 JSON 저장 가능한 형태로 변환한다."""
-    out = []
-    for entry in archive:
-        e = {k: v for k, v in entry.items() if k != "messages"}
-        e["messages"] = _serialize_messages(entry.get("messages", []))
-        out.append(e)
-    return out
+def _iso_to_kst_label(iso_str, fmt="%Y-%m-%d %H:%M"):
+    """Supabase가 돌려주는 UTC ISO 타임스탬프를, 앱 전체가 기대해 온 'KST 포맷 문자열'로 바꾼다.
 
-
-def _deserialize_archive(raw_archive):
-    out = []
-    for entry in raw_archive:
-        e = {k: v for k, v in entry.items() if k != "messages"}
-        e["messages"] = _deserialize_messages(entry.get("messages", []))
-        out.append(e)
-    return out
+    question_archive의 created_at / pass_records의 completed_at은 기존 코드 곳곳에서
+    문자열 슬라이싱([:10] 등)으로 날짜를 뽑아 쓰므로, DB로 바꾼 뒤에도 이 포맷 계약을
+    그대로 지켜야 나머지 코드(스트릭 계산, 날짜별 그룹핑 등)를 건드릴 필요가 없다.
+    """
+    if not iso_str:
+        return ""
+    try:
+        dt = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(KST).strftime(fmt)
+    except Exception:
+        return str(iso_str)[:16].replace("T", " ")
 
 
 def load_student_data(kakao_id):
-    """카카오 고유 회원번호로 저장된 학생의 과목/오답노트 아카이브/PASS 기록을 불러온다."""
+    """카카오 고유 회원번호로 Supabase에 저장된 학생의 과목/오답노트/PASS 기록을 불러온다."""
+    if not supabase:
+        return None
     try:
-        with open(_student_data_path(kakao_id), "r", encoding="utf-8") as f:
-            data = json.load(f)
+        user_res = supabase.table("users").select("*").eq("kakao_id", kakao_id).execute()
+        user_rows = user_res.data or []
+        if not user_rows:
+            return None
+        user_row = user_rows[0]
 
-        # 구버전 포맷 호환: messages+selected_mode(가장 옛버전) → clinic/review_messages →
-        # question_archive(현재 포맷) 순으로 한 번씩 이관한다.
-        if "clinic_messages" not in data and "messages" in data:
-            if data.get("selected_mode") == "✍️ 내 풀이 검토 (문제 + 연습장)":
-                data["review_messages"] = data.get("messages", [])
-            else:
-                data["clinic_messages"] = data.get("messages", [])
+        chat_res = (
+            supabase.table("chat_history")
+            .select("*")
+            .eq("kakao_id", kakao_id)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        archive = [
+            {
+                "id": row["id"],
+                "feature": row.get("feature", ""),
+                "created_at": _iso_to_kst_label(row.get("created_at")),
+                "messages": _deserialize_messages(row.get("messages")),
+            }
+            for row in (chat_res.data or [])
+        ]
 
-        if "question_archive" not in data:
-            archive = []
-            fallback_date = (data.get("updated_at") or "")[:16].replace("T", " ")
-            for feature_label, msgs in (
-                ("❓ 질문 클리닉", data.get("clinic_messages", [])),
-                ("🔍 오답 첨삭", data.get("review_messages", [])),
-            ):
-                if msgs:
-                    archive.append({
-                        "id": uuid.uuid4().hex,
-                        "feature": feature_label,
-                        "created_at": fallback_date,
-                        "messages": msgs,
-                    })
-            data["question_archive"] = archive
+        pass_res = (
+            supabase.table("pass_records")
+            .select("*")
+            .eq("kakao_id", kakao_id)
+            .order("completed_at", desc=False)
+            .execute()
+        )
+        pass_records = [
+            {
+                "topic": row.get("topic", ""),
+                "concept_summary": row.get("concept_summary") or row.get("topic", ""),
+                "completed_at": _iso_to_kst_label(row.get("completed_at")),
+            }
+            for row in (pass_res.data or [])
+        ]
 
-        data["question_archive"] = _deserialize_archive(data.get("question_archive", []))
-        data["pass_messages"] = _deserialize_messages(data.get("pass_messages", []))
-        data.setdefault("pass_topic", None)
-        data.setdefault("pass_completed", False)
-        data.setdefault("pass_records", [])
-        data.setdefault("pass_concept_summary", "")
-        data.setdefault("pass_completed_date", "")
-        data.setdefault("pass_grade", "")
-        return data
-    except (FileNotFoundError, json.JSONDecodeError):
+        return {
+            "kakao_id": kakao_id,
+            "nickname": user_row.get("nickname", ""),
+            "student_grade": user_row.get("student_grade"),
+            "pass_grade": user_row.get("pass_grade", ""),
+            "question_archive": archive,
+            "pass_records": pass_records,
+            "updated_at": user_row.get("updated_at", ""),
+        }
+    except Exception:
         return None
 
 
-def save_student_data(
-    kakao_id, nickname, student_grade, question_archive,
-    pass_topic=None, pass_messages=None, pass_completed=False, pass_records=None,
-    pass_concept_summary="", pass_completed_date="", pass_grade="",
-):
-    """학년/오답노트 아카이브/PASS 진행 상황·기록이 이어지도록 학생별 파일로 저장한다.
+def persist_current_student():
+    """로그인한 학생의 users 행(닉네임/과목/PASS용 학년)을 upsert한다.
 
-    질문 클리닉·오답 첨삭의 '현재 화면' 대화(clinic_messages/review_messages)는 더 이상
-    저장하지 않는다 - 접속할 때마다 백지로 시작하고, 완료된 질문만 question_archive에
-    차곡차곡 쌓여 '나의 오답노트' 팝업에서 다시 볼 수 있다.
+    대화 기록(chat_history)과 PASS 기록(pass_records)은 발생하는 그 순간
+    upsert_question_archive_entry() / insert_pass_record()가 각각 자기 테이블에
+    바로 써 넣으므로, 여기서는 users 한 줄만 최신 상태로 맞추면 된다.
     """
-    data = {
-        "kakao_id": kakao_id,
-        "nickname": nickname,
-        "student_grade": student_grade,
-        "question_archive": _serialize_archive(question_archive),
-        "pass_topic": pass_topic,
-        "pass_messages": _serialize_messages(pass_messages or []),
-        "pass_completed": pass_completed,
-        "pass_records": pass_records or [],
-        "pass_concept_summary": pass_concept_summary,
-        "pass_completed_date": pass_completed_date,
-        "pass_grade": pass_grade,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
+    kakao_id = st.session_state.get("kakao_id")
+    if not (supabase and kakao_id):
+        return
     try:
-        with open(_student_data_path(kakao_id), "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
+        supabase.table("users").upsert({
+            "kakao_id": kakao_id,
+            "nickname": st.session_state.student_name,
+            "student_grade": st.session_state.student_grade,
+            "pass_grade": st.session_state.get("pass_grade", ""),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).execute()
     except Exception:
         pass
 
 
-def persist_current_student():
-    """현재 세션(학년/오답노트 아카이브/PASS 진행 상황)을 로그인한 카카오 회원번호 파일에 저장한다."""
-    if st.session_state.get("kakao_id"):
-        save_student_data(
-            st.session_state.kakao_id,
-            st.session_state.student_name,
-            st.session_state.student_grade,
-            st.session_state.get("question_archive", []),
-            pass_topic=st.session_state.get("pass_topic"),
-            pass_messages=st.session_state.get("pass_messages", []),
-            pass_completed=st.session_state.get("pass_completed", False),
-            pass_records=st.session_state.get("pass_records", []),
-            pass_concept_summary=st.session_state.get("pass_concept_summary", ""),
-            pass_completed_date=st.session_state.get("pass_completed_date", ""),
-            pass_grade=st.session_state.get("pass_grade", ""),
-        )
-
-
 def upsert_question_archive_entry(state_prefix, feature_label, messages_key):
-    """현재 살아있는 대화(messages_key)를 question_archive의 해당 카드에 생성/갱신한다.
+    """현재 살아있는 대화(messages_key)를 question_archive 카드 + chat_history 행에 생성/갱신한다.
 
-    사진을 새로 올리면 새 카드를 만들고, 그 뒤 같은 문제로 이어지는 후속 대화는
-    (힌트 요청 등) 같은 카드를 계속 갱신한다 - 카드 1개 = 질문 1건.
+    사진을 새로 올리면 새 카드(= 새 chat_history 행)를 만들고, 그 뒤 같은 문제로
+    이어지는 후속 대화(힌트 요청 등)는 같은 행을 계속 UPDATE한다 - 카드 1개 = 질문 1건
+    = chat_history 행 1개. 세션의 question_archive 리스트도 함께 갱신해서, 이번
+    DB 쓰기가 끝나기 전에도(또는 실패하더라도) 화면에는 바로 반영되게 한다.
     """
     entry_id_key = f"{state_prefix}_archive_entry_id"
     entry_id = st.session_state.get(entry_id_key)
     messages_snapshot = list(st.session_state[messages_key])
+    kakao_id = st.session_state.get("kakao_id")
 
     if entry_id:
         for entry in st.session_state.question_archive:
             if entry["id"] == entry_id:
                 entry["messages"] = messages_snapshot
-                return
+                break
+        if supabase and kakao_id:
+            try:
+                supabase.table("chat_history").update({
+                    "messages": _serialize_messages(messages_snapshot),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", entry_id).execute()
+            except Exception:
+                pass
+        return
 
-    new_id = uuid.uuid4().hex
+    new_id = str(uuid.uuid4())
     st.session_state[entry_id_key] = new_id
     st.session_state.question_archive.append({
         "id": new_id,
@@ -305,25 +350,62 @@ def upsert_question_archive_entry(state_prefix, feature_label, messages_key):
         "created_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M"),
         "messages": messages_snapshot,
     })
+    if supabase and kakao_id:
+        try:
+            supabase.table("chat_history").insert({
+                "id": new_id,
+                "kakao_id": kakao_id,
+                "feature": feature_label,
+                "messages": _serialize_messages(messages_snapshot),
+            }).execute()
+        except Exception:
+            pass
+
+
+def insert_pass_record(topic, concept_summary, completed_at_dt):
+    """PASS 통과 1건을 pass_records 테이블에 즉시 저장한다."""
+    kakao_id = st.session_state.get("kakao_id")
+    if not (supabase and kakao_id):
+        return
+    try:
+        supabase.table("pass_records").insert({
+            "kakao_id": kakao_id,
+            "topic": topic,
+            "concept_summary": concept_summary,
+            "completed_at": completed_at_dt.isoformat(),
+        }).execute()
+    except Exception:
+        pass
 
 
 def list_all_student_records():
-    """선생님 대시보드용: student_data/ 폴더의 모든 학생 기록을 최근 업데이트순으로 불러온다."""
-    records = []
-    if not os.path.isdir(STUDENT_DATA_DIR):
+    """선생님 대시보드용: 모든 학생 기록을 최근 업데이트순으로 Supabase에서 불러온다."""
+    if not supabase:
+        return []
+    try:
+        users_res = supabase.table("users").select("kakao_id").order("updated_at", desc=True).execute()
+        records = []
+        for row in (users_res.data or []):
+            data = load_student_data(row.get("kakao_id"))
+            if data:
+                records.append(data)
         return records
-    for fname in sorted(os.listdir(STUDENT_DATA_DIR)):
-        if not fname.endswith(".json"):
-            continue
-        data = load_student_data(fname[:-5])
-        if data:
-            records.append(data)
-    records.sort(key=lambda d: d.get("updated_at", ""), reverse=True)
-    return records
+    except Exception:
+        return []
 
 
 def render_teacher_dashboard():
-    """학생들에게는 보이지 않는, 비밀번호로만 들어오는 선생님 전용 대시보드."""
+    """학생들에게는 보이지 않는, 비밀번호로만 들어오는 선생님 전용 대시보드.
+
+    학생 화면은 480px 폰 폭으로 고정하지만, 이 관리자 화면은 표/여러 칼럼 폼을
+    다루는 데스크톱 도구라 그 제약이 오히려 방해가 된다. inject_custom_css()보다
+    늦게(이 함수가 호출되는 시점에) 적용되는 스타일이라 동일 우선순위(!important)
+    규칙 중 나중 것이 이긴다는 CSS 캐스케이드 규칙으로 폭을 다시 넓힌다.
+    """
+    st.markdown(
+        "<style>.main .block-container { max-width: 1100px !important; }</style>",
+        unsafe_allow_html=True,
+    )
     top_c1, top_c2 = st.columns([4, 1])
     with top_c1:
         st.subheader("👨‍🏫 선생님 대시보드")
@@ -599,6 +681,98 @@ def inject_custom_css():
 
     /* 사이드바는 완전히 숨기지 않고 기본 접힘(collapsed) 상태로만 둔다.
        맨 아래 "선생님 모드" 비밀번호 입력칸이 여기 들어있다 (시크릿 선생님 대시보드 진입용). */
+
+    /* ==========================================
+       📱 모바일 앱 셸 - Streamlit 기본 크롬 숨기기 + 폰 화면 폭으로 고정
+       ========================================== */
+    #MainMenu,
+    header[data-testid="stHeader"],
+    [data-testid="stToolbar"],
+    [data-testid="stDecoration"],
+    [data-testid="stStatusWidget"],
+    footer {
+        display: none !important;
+    }
+
+    /* 본문을 스마트폰 폭(480px)으로 가운데 정렬해서, PC에서도 폰 화면처럼 보이게 한다.
+       하단 고정 탭바(아래 stRadio 스타일)에 마지막 콘텐츠가 가리지 않도록 아래쪽
+       여백도 넉넉히 둔다. */
+    .main .block-container {
+        max-width: 480px !important;
+        margin: 0 auto !important;
+        padding-top: 1.2rem !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+        padding-bottom: 96px !important;
+    }
+
+    /* ==========================================
+       🧭 하단 고정 탭바 (st.radio를 스마트폰 앱의 Bottom Tab Bar로 변신시킨다)
+       ========================================== */
+    div[data-testid="stRadio"] {
+        position: fixed !important;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        width: 100%;
+        max-width: 480px;
+        margin: 0 auto !important;
+        background-color: #FFFFFF;
+        border-top: 1px solid #E5E7EB;
+        box-shadow: 0 -6px 18px rgba(15, 23, 42, 0.07);
+        padding: 0.35rem 0.3rem calc(0.35rem + env(safe-area-inset-bottom, 0px));
+        z-index: 9999;
+    }
+
+    /* 위젯 라벨("모드 선택")은 화면에 보일 필요가 없다 */
+    div[data-testid="stRadio"] > label {
+        display: none !important;
+    }
+
+    div[data-testid="stRadio"] [role="radiogroup"] {
+        display: flex !important;
+        flex-direction: row !important;
+        justify-content: space-around;
+        align-items: stretch;
+        gap: 0.2rem;
+    }
+
+    div[data-testid="stRadio"] [role="radiogroup"] label {
+        flex: 1 1 0;
+        display: flex !important;
+        align-items: center;
+        justify-content: center;
+        margin: 0 !important;
+        padding: 0.55rem 0.2rem;
+        border-radius: 14px;
+        cursor: pointer;
+        transition: background-color 0.15s ease;
+    }
+
+    div[data-testid="stRadio"] [role="radiogroup"] label > div {
+        font-size: 0.8rem;
+        font-weight: 700;
+        color: #94A3B8;
+        text-align: center;
+        white-space: nowrap;
+    }
+
+    /* 실제 동그라미 라디오 버튼은 숨기되, 탭 영역을 누르면 여전히 클릭되게 둔다 */
+    div[data-testid="stRadio"] [role="radiogroup"] label input {
+        position: absolute;
+        opacity: 0;
+        width: 1px;
+        height: 1px;
+        pointer-events: none;
+    }
+
+    /* 선택된 탭 강조 (iPad Safari 포함 최신 브라우저는 :has() 지원) */
+    div[data-testid="stRadio"] [role="radiogroup"] label:has(input:checked) {
+        background-color: #EEF2FF;
+    }
+    div[data-testid="stRadio"] [role="radiogroup"] label:has(input:checked) > div {
+        color: #3A449A;
+    }
 
     h1, h2, h3 {
         color: #3A449A !important;
@@ -1489,6 +1663,13 @@ if "selected_mode" not in st.session_state:
 
 st.title("✏️ 알찬학원 신다혜 쌤의 1:1 수학 클리닉")
 
+if not supabase:
+    st.error(
+        "⚠️ 데이터베이스(Supabase)가 아직 연결되지 않았습니다. "
+        "SUPABASE_URL / SUPABASE_SERVICE_KEY를 Secrets에 설정하기 전까지는 "
+        "로그인·질문·PASS 기록이 저장되지 않습니다. (선생님에게 문의)"
+    )
+
 # ==========================================
 # 🕵️ 시크릿 선생님 모드 (사이드바 맨 아래, 학생 화면은 그대로 평범한 접힌 사이드바)
 # 비밀번호가 맞으면 학생 로그인 절차 없이 바로 대시보드로 진입한다.
@@ -1544,7 +1725,8 @@ if not st.session_state.authenticated and "code" in st.query_params:
                 # 이미 과목을 선택해 둔 적이 있는 학생 → 바로 입장.
                 # 단, 질문 클리닉/오답 첨삭 화면은 매번 백지로 시작한다 (콴다처럼) -
                 # clinic_messages/review_messages는 일부러 복원하지 않는다. 지난 질문은
-                # question_archive에 그대로 남아 있어서 '나의 오답노트' 팝업에서 볼 수 있다.
+                # question_archive(= Supabase chat_history 테이블)에 그대로 남아 있어서
+                # '👤 마이페이지 > 📝 오답노트'에서 언제든 다시 볼 수 있다.
                 st.session_state.student_grade = saved["student_grade"]
                 st.session_state.question_archive = saved.get("question_archive", [])
                 st.session_state.pass_topic = saved.get("pass_topic")
@@ -2081,6 +2263,11 @@ def render_pass_tab():
                                     "completed_at": now_kst.strftime("%Y-%m-%d %H:%M"),
                                     "concept_summary": summary or st.session_state.pass_topic,
                                 })
+                                insert_pass_record(
+                                    st.session_state.pass_topic,
+                                    summary or st.session_state.pass_topic,
+                                    now_kst,
+                                )
                                 st.session_state.pop("pass_card_bytes", None)
                                 st.balloons()
                             st.session_state.pass_messages.append({"role": "assistant", "content": bot_reply})
@@ -2134,14 +2321,14 @@ def render_my_page_tab():
         render_login_required_gate("👤 마이페이지")
         return
 
-    tab_attendance, tab_notes, tab_vault = st.tabs(
-        ["🔥 나의 출석 & 스탬프", "📝 오답노트", "🎴 개념 PASS 포토카드 보관함"]
-    )
+    # A. 닉네임 + 스트릭 배지, B. 스탬프판 - 탭으로 가리지 않고 화면 맨 위에 항상 보이게
+    st.markdown(f"#### 👋 {st.session_state.student_name} 님")
+    render_streak_badge(st.session_state.pass_records)
+    render_stamp_board(st.session_state.pass_records)
+    st.markdown("---")
 
-    with tab_attendance:
-        st.markdown(f"#### 👋 {st.session_state.student_name} 님")
-        render_streak_badge(st.session_state.pass_records)
-        render_stamp_board(st.session_state.pass_records)
+    # C. 오답노트 / PASS 포토카드 보관함만 st.tabs로 분리
+    tab_notes, tab_vault = st.tabs(["📝 오답노트", "🎴 PASS 포토카드 보관함"])
 
     with tab_notes:
         render_question_archive_cards()
@@ -2161,11 +2348,11 @@ st.radio(
 )
 st.markdown("---")
 
-if st.session_state.selected_mode == "❓ 질문 클리닉":
+if st.session_state.selected_mode == "❓ 질문":
     render_question_clinic_tab()
-elif st.session_state.selected_mode == "🔍 오답 첨삭":
+elif st.session_state.selected_mode == "🔍 첨삭":
     render_mistake_review_tab()
-elif st.session_state.selected_mode == "💮 개념 PASS":
+elif st.session_state.selected_mode == "💮 개념PASS":
     render_pass_tab()
 elif st.session_state.selected_mode == "👤 마이페이지":
     render_my_page_tab()
