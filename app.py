@@ -51,7 +51,8 @@ KAKAO_CLIENT_ID = st.secrets.get("KAKAO_CLIENT_ID", "")
 KAKAO_REDIRECT_URI = st.secrets.get("KAKAO_REDIRECT_URI", "https://math.studyground123.com/")
 TEACHER_DASHBOARD_PASSWORD = st.secrets.get("TEACHER_DASHBOARD_PASSWORD", "dahye1234")
 
-PASS_GRADE_LEVELS = ["중1", "중2", "중3", "고1", "고2", "고3"]
+PASS_GRADE_LEVELS = ["중1", "중2", "중3", "고1(원종)", "고1(수주,덕산)", "고2", "고3"]
+PASS_GRADE_CUSTOM_OPTION = "✍️ 직접 입력"
 MODE_OPTIONS = ["❓ 질문", "🔍 첨삭", "💮 개념PASS", "👤 마이페이지"]
 
 try:
@@ -94,7 +95,9 @@ supabase = get_supabase_client()
 def load_daily_pass_scope():
     """선생님이 학년별로 지정해 둔 '오늘의 개념 범위'를 daily_missions 테이블에서 불러온다.
 
-    없는 학년이나 Supabase 미설정 시에는 빈 문자열로 채운 기본값을 돌려준다.
+    없는 학년이나 Supabase 미설정 시에는 빈 문자열로 채운 기본값을 돌려준다. 선생님이
+    '✍️ 직접 입력'으로 PASS_GRADE_LEVELS에 없는 학년명을 등록했을 수도 있으므로, 그런
+    키도 걸러내지 않고 그대로 담아 돌려준다(학생 화면의 학년 버튼 목록이 이 값으로 결정됨).
     """
     result = {grade: "" for grade in PASS_GRADE_LEVELS}
     if not supabase:
@@ -109,7 +112,7 @@ def load_daily_pass_scope():
         )
         for row in (res.data or []):
             grade = row.get("grade")
-            if grade in result:
+            if grade:
                 result[grade] = row.get("scope_text") or ""
     except Exception:
         pass
@@ -514,7 +517,16 @@ def render_teacher_dashboard():
     with st.form("quick_mission_form", clear_on_submit=True):
         qc1, qc2 = st.columns([1, 2])
         with qc1:
-            quick_grade = st.selectbox("대상 학년", PASS_GRADE_LEVELS, key="quick_mission_grade")
+            quick_grade_select = st.selectbox(
+                "대상 학년",
+                PASS_GRADE_LEVELS + [PASS_GRADE_CUSTOM_OPTION],
+                key="quick_mission_grade",
+            )
+            quick_grade_custom = st.text_input(
+                "학년을 직접 입력 (위에서 '직접 입력' 선택 시에만 사용)",
+                placeholder="예: 고1(신규반)",
+                key="quick_mission_grade_custom",
+            )
         with qc2:
             quick_mission = st.text_input(
                 "미션 내용", placeholder="예: 근의 공식 설명하기", key="quick_mission_text"
@@ -524,7 +536,14 @@ def render_teacher_dashboard():
         )
 
     if quick_submitted:
-        if not quick_mission.strip():
+        quick_grade = (
+            quick_grade_custom.strip()
+            if quick_grade_select == PASS_GRADE_CUSTOM_OPTION
+            else quick_grade_select
+        )
+        if quick_grade_select == PASS_GRADE_CUSTOM_OPTION and not quick_grade_custom.strip():
+            st.warning("직접 입력을 선택했다면 학년명을 입력해 주세요.")
+        elif not quick_mission.strip():
             st.warning("미션 내용을 입력해 주세요.")
         else:
             mission_ok, mission_err = upsert_daily_mission(quick_grade, quick_mission)
@@ -2319,6 +2338,11 @@ def render_pass_tab():
     if not st.session_state.pass_topic:
         today_scope_map = load_daily_pass_scope()
         available_grades = [g for g in PASS_GRADE_LEVELS if today_scope_map.get(g, "").strip()]
+        # 선생님이 '✍️ 직접 입력'으로 등록한, 기본 목록에는 없는 학년명도 뒤에 이어붙인다.
+        available_grades += [
+            g for g in today_scope_map
+            if g not in PASS_GRADE_LEVELS and today_scope_map.get(g, "").strip()
+        ]
 
         if available_grades:
             st.markdown("##### 🙋 자신의 학년을 눌러줘")
