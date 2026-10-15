@@ -22,6 +22,23 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# ==========================================
+# 📲 PWA(홈 화면 앱 아이콘) 설정
+# manifest.json과 아이콘은 static/ 폴더에 있고, .streamlit/config.toml의
+# enableStaticServing = true 덕분에 /app/static/... 경로로 서빙된다 - Streamlit은
+# 레포 최상위 파일을 바로 "/manifest.json"으로 서빙해주지 않으므로, 실제로 동작하는
+# 이 경로를 쓴다. 학생이 사파리/크롬에서 "홈 화면에 추가"를 하면 주소창 없는
+# standalone 앱처럼 열린다.
+# ==========================================
+st.markdown(
+    """
+    <link rel="manifest" href="/app/static/manifest.json">
+    <meta name="theme-color" content="#3A449A">
+    <link rel="apple-touch-icon" href="/app/static/icon-192.png">
+    """,
+    unsafe_allow_html=True,
+)
+
 try:
     api_key = st.secrets["ANTHROPIC_API_KEY"]
 except Exception:
@@ -1526,6 +1543,7 @@ def load_system_prompt(student_grade):
 
 
 PASS_SUCCESS_TOKEN = "PASS_SUCCESS"
+PASS_FAIL_TOKEN = "PASS_FAIL"
 
 
 def calculate_pass_streak(pass_records, today=None):
@@ -1641,7 +1659,7 @@ def render_stamp_board(pass_records):
 
 def load_pass_system_prompt(pass_grade, scope_text):
     return (
-        "너는 알찬학원의 '오늘의 개념 PASS' 테스트를 담당하는, 깐깐하지만 친절한 조교다.\n"
+        "너는 알찬학원의 '오늘의 개념 PASS' 테스트를 담당하는, 깐깐하지만 따뜻한 조교다.\n"
         f"★ [학생 학년: {pass_grade}]\n"
         f"★ [🚨 오늘 선생님이 지정한 범위 - 반드시 이 범위 안에서만 출제할 것]: {scope_text}\n"
         "- 위 지정 범위를 벗어난 다른 단원이나 개념은 절대 묻지 마라. 학생이 다른 단원 이야기를 꺼내도 지정 범위로 다시 데려와라.\n\n"
@@ -1650,13 +1668,28 @@ def load_pass_system_prompt(pass_grade, scope_text):
         "- 질문 문장 안에 답이나 핵심 키워드를 절대 미리 흘리지 마라.\n"
         "- 가능하면 '오늘 선생님이 칠판에 적어주신 내용 중 ~에 대해 설명해 보세요' 같은 식으로, 오늘 수업에서 "
         "직접 배운 내용을 짚어주는 듯한 말투로 출제해라.\n\n"
-        "★ [2. 채점 원칙 - 가장 중요한 규칙]\n"
-        "- 학생의 답변에 핵심 키워드가 빠졌거나 설명이 정확하지 않으면, 정답을 절대로 먼저 알려주지 말고 짧은 힌트만 주면서 다시 답해보라고 유도해라.\n"
-        "- 학생의 답변이 개념을 정확히 꿰뚫고 있다고 판단될 때만 통과시켜라. 통과 시 반드시 아래 3줄 형식을 정확히 지켜서 출력해라 (다른 설명 없이 이 형식 그대로):\n"
+        "★ [2. 채점 원칙 - 세 가지 결과 중 하나로만 판정해라]\n"
+        "- 너무 깐깐하게 바로 실패 처리하지 마라. 아래 세 경우를 명확히 구분해서 판정해라.\n\n"
+        "① PASS(통과) - 학생의 답변이 개념을 정확히 꿰뚫고 있을 때만. 반드시 아래 3줄 형식을 정확히 "
+        "지켜서 출력해라 (다른 설명 없이 이 형식 그대로):\n"
         f"  1번째 줄: '{PASS_SUCCESS_TOKEN}' 이라는 단어 단독으로만\n"
         "  2번째 줄: 'SUMMARY: ' 다음에 이 개념의 핵심을 15~30자 내외 한 문장으로 요약 (인증샷 카드에 그대로 노출됨)\n"
-        "  3번째 줄부터: 이모지를 듬뿍 써서 아주 크고 신나게 칭찬하는 축하 메시지 1~2줄\n"
-        f"- 아직 통과시킬 수준이 아니라면 '{PASS_SUCCESS_TOKEN}'이라는 단어를 절대 쓰지 마라.\n\n"
+        "  3번째 줄부터: 이모지를 듬뿍 써서 아주 크고 신나게 칭찬하는 축하 메시지 1~2줄\n\n"
+        "② RETRY(부분 성공, 기본값) - 핵심 키워드를 한두 개 정도만 빼먹었거나 표현이 조금 "
+        "부정확하지만 전체적인 방향은 맞을 때. 절대 매몰차게 끝내지 말고, 정답을 먼저 알려주지 말고, "
+        "'거의 다 왔어! [빠진 키워드/개념]을 포함해서 다시 한 번 설명해볼래?' 같은 격려 섞인 말투로 "
+        "구체적인 힌트 한 줄만 주고 같은 질문에 다시 답할 기회를 줘라. 특별한 형식 없이 그냥 평소처럼 "
+        "답하면 된다(토큰 없이 보통 문장으로).\n\n"
+        "③ FAIL(미통과) - 질문과 전혀 관련 없는 대답, 완전히 다른 개념을 말하는 등 '엉뚱한 소리'를 "
+        "하거나, RETRY 힌트를 주고 다시 시도했는데도 여전히 핵심을 전혀 못 짚을 때만 이걸로 판정해라. "
+        "같은 질문을 계속 반복해서 묻지 말고 깔끔하게 마무리해라. 반드시 아래 형식으로 출력해라 "
+        "(다른 설명 없이 이 형식 그대로):\n"
+        f"  1번째 줄: '{PASS_FAIL_TOKEN}' 이라는 단어 단독으로만\n"
+        "  2번째 줄부터: 정답은 절대 알려주지 말고, '오늘은 여기까지 해보고 다음에 다시 도전해보자' "
+        "같은 따뜻하고 격려하는 마무리 멘트 1~2줄\n\n"
+        f"- ①②③ 중 하나가 아니면('{PASS_SUCCESS_TOKEN}'/'{PASS_FAIL_TOKEN}' 토큰을 쓰지 않는 평범한 대답이면) "
+        "자동으로 RETRY로 처리되니, 통과시킬 수준이 아닌데 아직 FAIL까지도 아니라면 그냥 토큰 없이 "
+        "힌트만 담아 답하면 된다.\n\n"
         "★ [3. 말투]\n"
         "- 학생에게 친근하고 다정한 반말('~해보자', '~했니?', '~란다')을 사용해라.\n"
         "- 힌트를 줄 때도 깐깐하게 핵심만 짚어주되, 끝까지 응원하는 태도를 잃지 마라."
@@ -1886,12 +1919,16 @@ if "pass_messages" not in st.session_state:
     st.session_state.pass_messages = []
 if "pass_completed" not in st.session_state:
     st.session_state.pass_completed = False
+if "pass_failed" not in st.session_state:
+    st.session_state.pass_failed = False
 if "pass_records" not in st.session_state:
     st.session_state.pass_records = []
 if "pass_concept_summary" not in st.session_state:
     st.session_state.pass_concept_summary = ""
 if "pass_completed_date" not in st.session_state:
     st.session_state.pass_completed_date = ""
+if "pass_completed_time" not in st.session_state:
+    st.session_state.pass_completed_time = ""
 if "pass_grade" not in st.session_state:
     st.session_state.pass_grade = ""
 if "teacher_mode" not in st.session_state:
@@ -1934,8 +1971,9 @@ with st.sidebar:
                 "authenticated", "student_name", "kakao_id",
                 "clinic_messages", "review_messages", "clinic_last_upload_key", "review_last_upload_key",
                 "clinic_archive_entry_id", "review_archive_entry_id", "question_archive",
-                "slack_thread_ts", "pass_topic", "pass_messages", "pass_completed", "pass_records",
-                "pass_concept_summary", "pass_completed_date", "pass_card_bytes", "pass_grade",
+                "slack_thread_ts", "pass_topic", "pass_messages", "pass_completed", "pass_failed",
+                "pass_records", "pass_concept_summary", "pass_completed_date", "pass_completed_time",
+                "pass_card_bytes", "pass_grade", "pass_fail_archive_entry_id",
             ]:
                 st.session_state.pop(key, None)
             st.rerun()
@@ -1981,9 +2019,11 @@ if not st.session_state.authenticated and "code" in st.query_params:
                 st.session_state.pass_topic = saved.get("pass_topic")
                 st.session_state.pass_messages = saved.get("pass_messages", [])
                 st.session_state.pass_completed = saved.get("pass_completed", False)
+                st.session_state.pass_failed = False
                 st.session_state.pass_records = saved.get("pass_records", [])
                 st.session_state.pass_concept_summary = saved.get("pass_concept_summary", "")
                 st.session_state.pass_completed_date = saved.get("pass_completed_date", "")
+                st.session_state.pass_completed_time = ""
                 st.session_state.pass_grade = saved.get("pass_grade", "")
             else:
                 # 첫 로그인 (이전 세션의 흔적이 섞이지 않게 초기화)
@@ -1993,9 +2033,11 @@ if not st.session_state.authenticated and "code" in st.query_params:
                 st.session_state.pass_topic = None
                 st.session_state.pass_messages = []
                 st.session_state.pass_completed = False
+                st.session_state.pass_failed = False
                 st.session_state.pass_records = []
                 st.session_state.pass_concept_summary = ""
                 st.session_state.pass_completed_date = ""
+                st.session_state.pass_completed_time = ""
                 st.session_state.pass_grade = ""
             st.session_state.pop("pass_card_bytes", None)
             st.session_state.authenticated = True
@@ -2397,6 +2439,8 @@ def render_pass_tab():
                         st.session_state.pass_topic = today_scope
                         st.session_state.pass_messages = [{"role": "assistant", "content": bot_reply}]
                         st.session_state.pass_completed = False
+                        st.session_state.pass_failed = False
+                        st.session_state.pop("pass_fail_archive_entry_id", None)
                         persist_current_student()
                         st.rerun()
                     except Exception as e:
@@ -2410,9 +2454,12 @@ def render_pass_tab():
                 st.session_state.pass_topic = None
                 st.session_state.pass_messages = []
                 st.session_state.pass_completed = False
+                st.session_state.pass_failed = False
                 st.session_state.pass_concept_summary = ""
                 st.session_state.pass_completed_date = ""
+                st.session_state.pass_completed_time = ""
                 st.session_state.pop("pass_card_bytes", None)
+                st.session_state.pop("pass_fail_archive_entry_id", None)
                 persist_current_student()
                 st.rerun()
 
@@ -2429,21 +2476,34 @@ def render_pass_tab():
             _render_pass_message(msg)
 
         if st.session_state.pass_completed:
+            # 하원 통제용 '하원 허가증' - 교실 뒤에서 선생님이 한눈에 확인할 수 있게
+            # 큰 글자로 통과 시간과 미션 주제를 담는다. 학생은 이 화면만 보여주고 나가면 된다.
             st.markdown(
-                """
+                f"""
                 <div style="
                     background: linear-gradient(135deg, #3A449A, #00A19D);
-                    border-radius: 20px;
-                    padding: 2rem 1.5rem;
+                    border-radius: 24px;
+                    padding: 2.2rem 1.5rem;
                     text-align: center;
                     box-shadow: 0 10px 30px rgba(58, 68, 154, 0.3);
                     margin: 1.2rem 0;
                 ">
-                    <div style="font-size: 2.1rem; font-weight: 800; color: #FFFFFF; margin-bottom: 0.3rem;">
-                        💮 PASS 완료!
+                    <div style="font-size: 1.05rem; font-weight: 700; color: #BFE8E5; letter-spacing: 0.04em; margin-bottom: 0.4rem;">
+                        💮 오늘의 하원 허가증
                     </div>
-                    <div style="font-size: 1.05rem; color: #F0FDFA; font-weight: 600;">
-                        오늘의 개념을 완벽하게 통과했어요!
+                    <div style="font-size: 2.3rem; font-weight: 900; color: #FFFFFF; margin-bottom: 1rem;">
+                        미션 완료!
+                    </div>
+                    <div style="background: rgba(255,255,255,0.16); border-radius: 14px; padding: 0.9rem 1.1rem; margin-bottom: 0.7rem;">
+                        <div style="font-size: 0.85rem; color: #F0FDFA; opacity: 0.85;">통과 시간</div>
+                        <div style="font-size: 1.7rem; font-weight: 800; color: #FFFFFF;">{st.session_state.pass_completed_time or "-"}</div>
+                    </div>
+                    <div style="background: rgba(255,255,255,0.16); border-radius: 14px; padding: 0.9rem 1.1rem;">
+                        <div style="font-size: 0.85rem; color: #F0FDFA; opacity: 0.85;">미션 주제</div>
+                        <div style="font-size: 1.3rem; font-weight: 800; color: #FFFFFF;">{st.session_state.pass_topic}</div>
+                    </div>
+                    <div style="font-size: 1rem; color: #F0FDFA; font-weight: 600; margin-top: 1.1rem;">
+                        선생님께 이 화면을 보여주고 하원하세요! 👋
                     </div>
                 </div>
                 """,
@@ -2468,6 +2528,41 @@ def render_pass_tab():
                 use_container_width=True,
                 key="pass_card_download_btn",
             )
+        elif st.session_state.pass_failed:
+            st.markdown(
+                """
+                <div style="
+                    background: linear-gradient(135deg, #6B7280, #9CA3AF);
+                    border-radius: 20px;
+                    padding: 1.8rem 1.5rem;
+                    text-align: center;
+                    box-shadow: 0 10px 24px rgba(107, 114, 128, 0.3);
+                    margin: 1.2rem 0;
+                ">
+                    <div style="font-size: 1.8rem; font-weight: 800; color: #FFFFFF; margin-bottom: 0.3rem;">
+                        😢 오늘은 여기까지!
+                    </div>
+                    <div style="font-size: 1rem; color: #F3F4F6; font-weight: 600;">
+                        오답노트에 저장해뒀어. 다음에 다시 도전해보자!
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button(
+                "🔄 다시 도전하기", key="pass_fail_retry_btn", use_container_width=True, type="primary"
+            ):
+                st.session_state.pass_topic = None
+                st.session_state.pass_messages = []
+                st.session_state.pass_completed = False
+                st.session_state.pass_failed = False
+                st.session_state.pass_concept_summary = ""
+                st.session_state.pass_completed_date = ""
+                st.session_state.pass_completed_time = ""
+                st.session_state.pop("pass_card_bytes", None)
+                st.session_state.pop("pass_fail_archive_entry_id", None)
+                persist_current_student()
+                st.rerun()
         else:
             if pass_answer := st.chat_input("여기에 답변을 적어줘!", key="pass_chat_input"):
                 st.session_state.pass_messages.append({"role": "user", "content": pass_answer})
@@ -2490,6 +2585,7 @@ def render_pass_tab():
                             )
                             bot_reply = get_response_text(response)
                             passed = bot_reply.strip().startswith(PASS_SUCCESS_TOKEN)
+                            failed = (not passed) and bot_reply.strip().startswith(PASS_FAIL_TOKEN)
                             if passed:
                                 body = bot_reply.strip()[len(PASS_SUCCESS_TOKEN):].strip()
                                 summary = ""
@@ -2504,6 +2600,7 @@ def render_pass_tab():
                                 kst = timezone(timedelta(hours=9))
                                 now_kst = datetime.now(kst)
                                 st.session_state.pass_completed_date = now_kst.strftime("%Y.%m.%d")
+                                st.session_state.pass_completed_time = now_kst.strftime("%H:%M")
                                 st.session_state.pass_records.append({
                                     "topic": st.session_state.pass_topic,
                                     "completed_at": now_kst.strftime("%Y-%m-%d %H:%M"),
@@ -2515,8 +2612,23 @@ def render_pass_tab():
                                     now_kst,
                                 )
                                 st.session_state.pop("pass_card_bytes", None)
+                                st.session_state.pass_messages.append({"role": "assistant", "content": bot_reply})
                                 st.balloons()
-                            st.session_state.pass_messages.append({"role": "assistant", "content": bot_reply})
+                            elif failed:
+                                body = bot_reply.strip()[len(PASS_FAIL_TOKEN):].strip()
+                                bot_reply = body or "오늘은 여기까지 해보고, 다음에 다시 도전해보자! 할 수 있어 💪"
+                                st.session_state.pass_messages.append({"role": "assistant", "content": bot_reply})
+                                st.session_state.pass_failed = True
+                                # 완전히 다른 방향으로 간 시도만 오답노트에 남긴다 (RETRY로 이어지는
+                                # 일반 힌트 대화는 아직 진행 중이라 archiving하지 않는다).
+                                upsert_question_archive_entry(
+                                    "pass_fail",
+                                    f"💮 개념PASS (미통과) · {st.session_state.pass_topic}",
+                                    "pass_messages",
+                                )
+                            else:
+                                # RETRY: 핵심 키워드 한두 개만 빠진 근접 오답 - 힌트를 주며 같은 시도를 이어간다.
+                                st.session_state.pass_messages.append({"role": "assistant", "content": bot_reply})
                             persist_current_student()
                             st.rerun()
                         except Exception as e:

@@ -5,3 +5,8 @@ backgroundColor = "#F8FAFC"
 secondaryBackgroundColor = "#FFFFFF"
 textColor = "#1F2937"
 font = "sans serif"
+
+[server]
+# PWA manifest.json/아이콘을 /app/static/...으로 서빙하기 위해 필요하다.
+# static/ 폴더(app.py와 같은 위치)에 둔 파일들이 이 경로 아래로 노출된다.
+enableStaticServing = true
