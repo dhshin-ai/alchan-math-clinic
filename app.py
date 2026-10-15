@@ -1467,7 +1467,10 @@ def load_system_prompt(student_grade):
         "너는 친절하고 실력 있는 알찬학원 수학 선생님이다.\n"
         "말투는 학생에게 친근하고 다정한 반말('~해보자', '~했니?', '~란다')을 100% 사용해라.\n"
         "★ [이름 반복 언급 금지 경고]: 자기 자신을 3인칭('다혜 쌤은')으로 부르거나 이름을 반복하지 말고, 즉시 본론으로 들어가라.\n\n"
-        f"★ [현재 학생 선택 과목: {student_grade}]\n"
+        # 이제 로그인 시 과목을 강제로 고르게 하지 않으므로, student_grade는 학생이
+        # 직접 고른 값이 아니라 기본값(공통수학1)일 수도 있다 - "선택"이라고 단정하지
+        # 않는 문구로 둔다.
+        f"★ [현재 설정된 과목: {student_grade} (학생이 직접 고르지 않았을 수도 있음)]\n"
         "★ [🚨 1문 1답 인터랙티브 필수 수칙]:\n"
         "- 전체 단계를 한 번에 출력하지 말고, 출제 유형을 밝힌 후 오직 지금 풀어야 할 '첫 번째 질문(1단계)' 단 하나만 던지고 즉시 말을 마쳐라.\n\n"
         "★ [🚨 카톡 스타일 초간결 답변 (3줄 제한 필수)]:\n"
@@ -1835,8 +1838,6 @@ if "slack_thread_ts" not in st.session_state:
     st.session_state.slack_thread_ts = None
 if "kakao_id" not in st.session_state:
     st.session_state.kakao_id = None
-if "kakao_needs_grade" not in st.session_state:
-    st.session_state.kakao_needs_grade = False
 if "kakao_login_error" not in st.session_state:
     st.session_state.kakao_login_error = None
 if "kakao_login_error_detail" not in st.session_state:
@@ -1906,7 +1907,7 @@ with st.sidebar:
         if st.button("🔓 로그아웃", use_container_width=True, key="sidebar_logout_btn"):
             persist_current_student()
             for key in [
-                "authenticated", "student_name", "kakao_id", "kakao_needs_grade",
+                "authenticated", "student_name", "kakao_id",
                 "clinic_messages", "review_messages", "clinic_last_upload_key", "review_last_upload_key",
                 "clinic_archive_entry_id", "review_archive_entry_id", "question_archive",
                 "slack_thread_ts", "pass_topic", "pass_messages", "pass_completed", "pass_records",
@@ -1941,14 +1942,17 @@ if not st.session_state.authenticated and "code" in st.query_params:
             st.session_state.kakao_id = kakao_id
             st.session_state.student_name = nickname
 
+            # 콴다처럼 과목/학년을 묻지 않고 카카오 인증만 끝나면 바로 들어간다 -
+            # '처음 로그인인지'는 더 이상 student_grade 유무로 가리지 않는다(그 컬럼은
+            # 실제 users 테이블에 없어 늘 비어 있다). users에 행이 있으면(saved) 그냥
+            # 돌아온 학생으로 보고 과거 기록을 복원하고, 없으면 첫 로그인으로 보고
+            # 빈 상태로 시작한다.
             saved = load_student_data(kakao_id)
-            if saved and saved.get("student_grade"):
-                # 이미 과목을 선택해 둔 적이 있는 학생 → 바로 입장.
-                # 단, 질문 클리닉/오답 첨삭 화면은 매번 백지로 시작한다 (콴다처럼) -
+            if saved:
+                # 질문 클리닉/오답 첨삭 화면은 매번 백지로 시작한다 (콴다처럼) -
                 # clinic_messages/review_messages는 일부러 복원하지 않는다. 지난 질문은
                 # question_archive(= Supabase chat_history 테이블)에 그대로 남아 있어서
                 # '👤 마이페이지 > 📝 오답노트'에서 언제든 다시 볼 수 있다.
-                st.session_state.student_grade = saved["student_grade"]
                 st.session_state.question_archive = saved.get("question_archive", [])
                 st.session_state.pass_topic = saved.get("pass_topic")
                 st.session_state.pass_messages = saved.get("pass_messages", [])
@@ -1957,10 +1961,8 @@ if not st.session_state.authenticated and "code" in st.query_params:
                 st.session_state.pass_concept_summary = saved.get("pass_concept_summary", "")
                 st.session_state.pass_completed_date = saved.get("pass_completed_date", "")
                 st.session_state.pass_grade = saved.get("pass_grade", "")
-                st.session_state.pop("pass_card_bytes", None)
-                st.session_state.authenticated = True
             else:
-                # 첫 로그인 → 과목 선택 한 번만 더 받는다 (이전 세션의 흔적이 섞이지 않게 초기화)
+                # 첫 로그인 (이전 세션의 흔적이 섞이지 않게 초기화)
                 st.session_state.clinic_messages = []
                 st.session_state.review_messages = []
                 st.session_state.question_archive = []
@@ -1971,8 +1973,8 @@ if not st.session_state.authenticated and "code" in st.query_params:
                 st.session_state.pass_concept_summary = ""
                 st.session_state.pass_completed_date = ""
                 st.session_state.pass_grade = ""
-                st.session_state.pop("pass_card_bytes", None)
-                st.session_state.kakao_needs_grade = True
+            st.session_state.pop("pass_card_bytes", None)
+            st.session_state.authenticated = True
         except Exception as e:
             st.session_state.kakao_login_error = "😥 카카오 로그인에 실패했어요. 잠시 후 다시 시도해 주세요."
             st.session_state.kakao_login_error_detail = str(e)
@@ -1986,9 +1988,9 @@ if not st.session_state.authenticated and "error" in st.query_params:
 def render_login_required_gate(feature_label):
     """로그인 전 상태에서 각 탭 내부에 뜨는 안내.
 
-    카카오 인증까지는 끝났지만 과목을 아직 안 고른 학생에게는(kakao_needs_grade)
-    학년 선택 1회 단계를 보여주고, 그 외에는 안내 문구 + 오리지널 카카오 로그인 버튼을 보여준다.
-    탭 3개가 동시에 이 함수를 호출할 수 있으므로, 위젯 key는 반드시 feature_label로 구분한다.
+    카카오 로그인만 끝나면 과목/학년을 묻지 않고 바로 기능을 쓸 수 있다(콴다 스타일) -
+    로그인 자체를 가로막는 별도의 '학년 선택' 단계는 없다. 탭 3개가 동시에 이 함수를
+    호출할 수 있지만, 이 함수 자체는 더 이상 탭별로 분기할 위젯이 없다.
     """
     if st.session_state.kakao_login_error:
         st.error(st.session_state.kakao_login_error)
@@ -1998,45 +2000,23 @@ def render_login_required_gate(feature_label):
         st.session_state.kakao_login_error = None
         st.session_state.kakao_login_error_detail = None
 
-    if st.session_state.kakao_needs_grade:
+    st.markdown(
+        f"""
+        <div class="guide-box" style="text-align:center;">
+            <div class="guide-title">🔒 로그인이 필요해요</div>
+            <div class="guide-item"><b>{feature_label}</b> 기능을 사용하려면 카카오로 로그인해주세요.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if KAKAO_CLIENT_ID:
         st.markdown(
-            f"""
-            <div class="guide-box">
-                <div class="guide-title">👋 {st.session_state.student_name} 님, 반가워요!</div>
-                <div class="guide-item">2022 개정 교육과정에 맞춘 과목을 선택하고 시작해 주세요. (최초 1회만 선택)</div>
-            </div>
-            """,
+            f'<a href="{get_kakao_login_url(state=st.session_state.selected_mode)}" class="kakao-login-btn">'
+            f'<span class="kakao-login-btn-icon">💬</span>카카오 로그인</a>',
             unsafe_allow_html=True,
         )
-        input_grade = st.selectbox(
-            "학년 / 과목 선택 (2022 개정 교육과정):",
-            ["중2", "중3", "공통수학1", "공통수학2", "대수", "미적분1", "미적분2", "확률과 통계", "기하와 벡터"],
-            key=f"grade_select_{feature_label}",
-        )
-        if st.button("🚀 시작하기", key=f"grade_start_{feature_label}", use_container_width=True):
-            st.session_state.student_grade = input_grade
-            st.session_state.authenticated = True
-            st.session_state.kakao_needs_grade = False
-            persist_current_student()
-            st.rerun()
     else:
-        st.markdown(
-            f"""
-            <div class="guide-box" style="text-align:center;">
-                <div class="guide-title">🔒 로그인이 필요해요</div>
-                <div class="guide-item"><b>{feature_label}</b> 기능을 사용하려면 카카오로 로그인해주세요.</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        if KAKAO_CLIENT_ID:
-            st.markdown(
-                f'<a href="{get_kakao_login_url(state=st.session_state.selected_mode)}" class="kakao-login-btn">'
-                f'<span class="kakao-login-btn-icon">💬</span>카카오 로그인</a>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.warning("카카오 로그인이 아직 설정되지 않았습니다. 선생님에게 문의해 주세요.")
+        st.warning("카카오 로그인이 아직 설정되지 않았습니다. 선생님에게 문의해 주세요.")
 
 
 def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_uploader, caption_text):
@@ -2307,6 +2287,25 @@ def _render_pass_message(msg):
             st.markdown(msg["content"])
 
 
+def render_pass_grade_picker(key_suffix, button_label="✅ 선택 완료"):
+    """'개념 PASS'용 반/학년(pass_grade)을 고르고, 고르는 즉시 세션+DB에 저장한다.
+
+    '💮 개념 PASS' 탭의 최초 1회 선택과 '👤 마이페이지'의 "학년/반 변경하기"가
+    똑같은 선택 로직을 쓰므로 하나로 묶었다. 버튼을 눌러 저장이 끝나면 True를
+    돌려줘서, 호출부가 st.rerun() 등 다음 동작을 알아서 결정하게 한다.
+    """
+    chosen = st.selectbox(
+        "학년/반 선택", PASS_GRADE_LEVELS, key=f"grade_picker_{key_suffix}"
+    )
+    if st.button(
+        button_label, key=f"grade_picker_btn_{key_suffix}", use_container_width=True, type="primary"
+    ):
+        st.session_state.pass_grade = chosen
+        persist_current_student()
+        return True
+    return False
+
+
 def render_pass_tab():
     st.markdown("### 💮 개념 PASS")
 
@@ -2326,46 +2325,22 @@ def render_pass_tab():
     st.markdown("---")
 
     if not st.session_state.pass_topic:
+        if not st.session_state.pass_grade:
+            # ① 지연 선택(Lazy Selection) - 반/학년을 아직 고른 적이 없는 학생에게만,
+            # 이 탭 안에서 딱 한 번 물어본다. 고르는 즉시 세션+DB에 저장되므로 다음부터는
+            # (오늘이든 다른 날이든, 심지어 로그아웃 후 다시 로그인해도) 다시 묻지 않는다.
+            st.markdown("##### 🙋 어느 반(학년) 미션을 볼까요?")
+            st.caption("처음 한 번만 고르면 돼. 다음부터는 바로 그 반의 오늘 미션을 보여줄게.")
+            if render_pass_grade_picker("pass_tab"):
+                st.rerun()
+            return
+
+        # ② 이미 반(학년)이 정해져 있다 - 묻지 않고 바로 오늘의 미션을 보여준다.
+        selected_grade = st.session_state.pass_grade
         today_scope_map = load_daily_pass_scope()
-        available_grades = [g for g in PASS_GRADE_LEVELS if today_scope_map.get(g, "").strip()]
-        # 선생님이 '✍️ 직접 입력'으로 등록한, 기본 목록에는 없는 학년명도 뒤에 이어붙인다.
-        available_grades += [
-            g for g in today_scope_map
-            if g not in PASS_GRADE_LEVELS and today_scope_map.get(g, "").strip()
-        ]
-
-        if available_grades:
-            st.markdown("##### 🙋 자신의 학년을 눌러줘")
-            if st.session_state.pass_grade not in available_grades:
-                st.session_state.pass_grade = available_grades[0]
-            grade_cols = st.columns(len(available_grades))
-            for col, grade in zip(grade_cols, available_grades):
-                with col:
-                    is_selected = grade == st.session_state.pass_grade
-                    if st.button(
-                        grade,
-                        key=f"pass_grade_btn_{grade}",
-                        use_container_width=True,
-                        type="primary" if is_selected else "secondary",
-                    ):
-                        st.session_state.pass_grade = grade
-                        st.rerun()
-            selected_grade = st.session_state.pass_grade
-        else:
-            default_index = (
-                PASS_GRADE_LEVELS.index(st.session_state.pass_grade)
-                if st.session_state.pass_grade in PASS_GRADE_LEVELS
-                else 0
-            )
-            selected_grade = st.selectbox(
-                "자신의 학년을 선택해줘",
-                PASS_GRADE_LEVELS,
-                index=default_index,
-                key="pass_grade_select",
-            )
-            st.session_state.pass_grade = selected_grade
-
         today_scope = today_scope_map.get(selected_grade, "")
+
+        st.caption(f"현재 반: **{selected_grade}** · 반을 바꾸려면 '👤 마이페이지'에서 변경할 수 있어요.")
 
         if today_scope:
             st.info(f"📌 **오늘의 미션: {selected_grade} - {today_scope}**")
@@ -2569,6 +2544,23 @@ def render_my_page_tab():
     else:
         # A. 닉네임 + 스트릭 배지, B. 스탬프판 - 탭으로 가리지 않고 화면 맨 위에 항상 보이게
         st.markdown(f"#### 👋 {st.session_state.student_name} 님")
+
+        grade_c1, grade_c2 = st.columns([3, 1])
+        with grade_c1:
+            grade_label = st.session_state.pass_grade or "아직 선택 안 함"
+            st.caption(f"🎓 개념 PASS 반/학년: **{grade_label}**")
+        with grade_c2:
+            if st.button("✏️ 변경하기", key="mypage_change_grade_btn", use_container_width=True):
+                st.session_state["_show_grade_picker_in_mypage"] = not st.session_state.get(
+                    "_show_grade_picker_in_mypage", False
+                )
+
+        if st.session_state.get("_show_grade_picker_in_mypage"):
+            if render_pass_grade_picker("mypage", button_label="💾 저장"):
+                st.session_state["_show_grade_picker_in_mypage"] = False
+                st.success(f"✅ {st.session_state.pass_grade}로 변경했습니다!")
+                st.rerun()
+
         render_streak_badge(st.session_state.pass_records)
         render_stamp_board(st.session_state.pass_records)
         st.markdown("---")
