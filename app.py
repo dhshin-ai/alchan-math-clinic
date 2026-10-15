@@ -16,8 +16,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 st.set_page_config(
-    page_title="알찬학원 신다혜 쌤의 1:1 수학 클리닉",
-    page_icon="✏️",
+    page_title="다혜T의 1:1 수학 PASS",
+    page_icon="👩‍🏫",
     layout="centered",  # 모바일 앱 셸 - 480px 폭으로 CSS에서 한 번 더 강제한다
     initial_sidebar_state="collapsed",
 )
@@ -35,6 +35,8 @@ st.markdown(
     <link rel="manifest" href="/app/static/manifest.json">
     <meta name="theme-color" content="#3A449A">
     <link rel="apple-touch-icon" href="/app/static/icon-192.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="다혜T 수학">
     """,
     unsafe_allow_html=True,
 )
@@ -1875,7 +1877,7 @@ def generate_pass_card(nickname, topic, concept_summary, date_str):
     _draw_pass_stamp(draw, img, center_x=W - 230, center_y=panel[3] - 40, diameter=260)
 
     footer_font = _pass_font("Medium", 30)
-    footer = "알찬학원 신다혜 쌤의 수학 클리닉"
+    footer = "다혜T의 1:1 수학 PASS"
     footer_w = draw.textlength(footer, font=footer_font)
     draw.line([(W / 2 - 140, 1830), (W / 2 + 140, 1830)], fill=(200, 203, 222), width=2)
     draw.text((W / 2 - footer_w / 2, 1856), footer, font=footer_font, fill=muted)
@@ -1948,7 +1950,28 @@ if st.query_params.get("tab") == "pass":
     st.session_state.selected_mode = "💮 개념PASS"
     st.query_params.clear()
 
-st.title("✏️ 알찬학원 신다혜 쌤의 1:1 수학 클리닉")
+st.markdown(
+    """
+    <div style="
+        background: linear-gradient(135deg, #EEF1FB, #E3F2F1);
+        border: 1px solid rgba(58, 68, 154, 0.12);
+        border-radius: 20px;
+        padding: 1.3rem 1.5rem;
+        margin-bottom: 1rem;
+    ">
+        <div style="font-size: 1.45rem; font-weight: 900; color: #3A449A; letter-spacing: -0.01em;">
+            👩‍🏫 다혜T의 1:1 수학 PASS
+        </div>
+        <div style="font-size: 0.92rem; font-weight: 700; color: #00A19D; margin-top: 0.3rem;">
+            매일매일 완벽하게 끝내는 개념 클리닉
+        </div>
+        <div style="font-size: 0.86rem; color: #475569; margin-top: 0.6rem; line-height: 1.5;">
+            안녕! 다혜T의 1:1 수학 PASS에 온 걸 환영해 😊
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 if not supabase:
     st.error(
@@ -2069,8 +2092,8 @@ def render_login_required_gate(feature_label):
     st.markdown(
         f"""
         <div class="guide-box" style="text-align:center;">
-            <div class="guide-title">🔒 로그인이 필요해요</div>
-            <div class="guide-item"><b>{feature_label}</b> 기능을 사용하려면 카카오로 로그인해주세요.</div>
+            <div class="guide-title">🔒 로그인하고 같이 시작해볼까?</div>
+            <div class="guide-item"><b>{feature_label}</b>은 로그인하면 바로 쓸 수 있어. 카카오로 편하게 로그인해줘 😊</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -2379,7 +2402,7 @@ def render_pass_tab():
         render_login_required_gate("💮 개념 PASS")
         return
 
-    st.caption("선생님이 오늘 정해준 범위 안에서, 핵심 개념이나 오개념을 확인하는 질문을 던져줄게.")
+    st.caption("다혜T가 오늘 정해준 범위 안에서, 핵심 개념이나 오개념을 콕 집어 물어볼게. 끝까지 같이 해보자!")
 
     st.markdown(
         f'<div class="pass-date-banner">'
@@ -2680,6 +2703,7 @@ def render_my_page_tab():
     else:
         # A. 닉네임 + 스트릭 배지, B. 스탬프판 - 탭으로 가리지 않고 화면 맨 위에 항상 보이게
         st.markdown(f"#### 👋 {st.session_state.student_name} 님")
+        st.caption("오늘도 다혜T랑 목표한 미션, 완벽하게 끝내보자!")
 
         grade_c1, grade_c2 = st.columns([3, 1])
         with grade_c1:
