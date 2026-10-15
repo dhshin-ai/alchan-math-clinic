@@ -937,7 +937,7 @@ def inject_custom_css():
         padding-top: 1.2rem !important;
         padding-left: 1rem !important;
         padding-right: 1rem !important;
-        padding-bottom: 96px !important;
+        padding-bottom: 100px !important;
     }
 
     /* ==========================================
@@ -945,17 +945,17 @@ def inject_custom_css():
        ========================================== */
     div[data-testid="stRadio"] {
         position: fixed !important;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        width: 100%;
-        max-width: 480px;
+        left: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
+        width: 100% !important;
+        max-width: 480px !important;
         margin: 0 auto !important;
-        background-color: #FFFFFF;
-        border-top: 1px solid #E5E7EB;
-        box-shadow: 0 -6px 18px rgba(15, 23, 42, 0.07);
-        padding: 0.35rem 0.3rem calc(0.35rem + env(safe-area-inset-bottom, 0px));
-        z-index: 9999;
+        background-color: #FFFFFF !important;
+        border-top: 1px solid #E5E7EB !important;
+        box-shadow: 0 -6px 18px rgba(15, 23, 42, 0.07) !important;
+        padding: 0.35rem 0.3rem calc(0.35rem + env(safe-area-inset-bottom, 0px)) !important;
+        z-index: 9999 !important;
     }
 
     /* 위젯 라벨("모드 선택")은 화면에 보일 필요가 없다 */
@@ -966,51 +966,58 @@ def inject_custom_css():
     div[data-testid="stRadio"] [role="radiogroup"] {
         display: flex !important;
         flex-direction: row !important;
-        justify-content: space-around;
-        align-items: stretch;
-        gap: 0.2rem;
+        justify-content: space-around !important;
+        align-items: stretch !important;
+        width: 100% !important;
+        gap: 0.2rem !important;
     }
 
     div[data-testid="stRadio"] [role="radiogroup"] label {
-        flex: 1 1 0;
+        flex: 1 1 0 !important;
         display: flex !important;
-        align-items: center;
-        justify-content: center;
+        align-items: center !important;
+        justify-content: center !important;
+        background: transparent !important;
         margin: 0 !important;
-        padding: 0.55rem 0.2rem;
-        border-radius: 14px;
-        cursor: pointer;
-        transition: background-color 0.15s ease;
+        padding: 0.55rem 0.2rem !important;
+        border-radius: 14px !important;
+        cursor: pointer !important;
+        transition: background-color 0.15s ease !important;
     }
 
     div[data-testid="stRadio"] [role="radiogroup"] label > div {
-        font-size: 0.8rem;
-        font-weight: 700;
-        color: #94A3B8;
-        text-align: center;
-        white-space: nowrap;
+        font-size: 0.8rem !important;
+        font-weight: 700 !important;
+        color: #94A3B8 !important;
+        text-align: center !important;
+        white-space: nowrap !important;
     }
 
-    /* 실제 동그라미 라디오 버튼은 숨기되, 탭 영역을 누르면 여전히 클릭되게 둔다.
-       입력 자체를 숨기는 것과, BaseWeb이 그 입력을 감싸는 장식용 첫 번째 div를
-       별도로 그리는 경우까지 둘 다 대비해 이중으로 숨긴다. */
+    /* 실제 동그라미 라디오 버튼은 완전히 제거한다. BaseWeb이 input 자체에 원형
+       스타일(appearance 등)을 CSS-in-JS로 입혀서 specificity가 높을 수 있으므로,
+       아래 속성 전부에 !important를 붙여 무조건 이긴다. 또한 "label의 직속 자식
+       div"로만 제한하지 않고(그 사이에 감싸는 wrapper div가 있을 수 있음), label
+       내부 어디에 있든 첫 번째 자식인 원형 장식 div를 descendant 선택자로 넓게
+       잡아 숨긴다. */
     div[data-testid="stRadio"] [role="radiogroup"] label input {
-        position: absolute;
-        opacity: 0;
-        width: 1px;
-        height: 1px;
-        pointer-events: none;
+        position: absolute !important;
+        opacity: 0 !important;
+        width: 1px !important;
+        height: 1px !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        pointer-events: none !important;
     }
-    div[data-testid="stRadio"] [role="radiogroup"] > label > div:first-child {
+    div[role="radiogroup"] label div:first-child {
         display: none !important;
     }
 
     /* 선택된 탭 강조 (iPad Safari 포함 최신 브라우저는 :has() 지원) */
     div[data-testid="stRadio"] [role="radiogroup"] label:has(input:checked) {
-        background-color: #EEF2FF;
+        background-color: #EEF2FF !important;
     }
     div[data-testid="stRadio"] [role="radiogroup"] label:has(input:checked) > div {
-        color: #3A449A;
+        color: #3A449A !important;
     }
 
     h1, h2, h3 {
