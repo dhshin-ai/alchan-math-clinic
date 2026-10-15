@@ -72,7 +72,7 @@ TEACHER_DASHBOARD_PASSWORD = st.secrets.get("TEACHER_DASHBOARD_PASSWORD", "dahye
 
 PASS_GRADE_LEVELS = ["중1", "중2", "중3", "고1(원종)", "고1(수주,덕산)", "고2", "고3"]
 PASS_GRADE_CUSTOM_OPTION = "✍️ 직접 입력"
-MODE_OPTIONS = ["❓ 질문", "🔍 첨삭", "💮 개념PASS", "👤 마이페이지"]
+MODE_OPTIONS = ["❓ 질문", "🔍 첨삭", "💮 개념PASS", "👤 마이"]
 
 try:
     from supabase import create_client, Client  # noqa: F401 (Client는 타입 표기용)
@@ -922,7 +922,9 @@ def inject_custom_css():
     [data-testid="stToolbar"],
     [data-testid="stDecoration"],
     [data-testid="stStatusWidget"],
-    footer {
+    footer,
+    .viewerBadge_container__1QSob,
+    [class*="viewerBadge"] {
         display: none !important;
     }
 
@@ -989,13 +991,18 @@ def inject_custom_css():
         white-space: nowrap;
     }
 
-    /* 실제 동그라미 라디오 버튼은 숨기되, 탭 영역을 누르면 여전히 클릭되게 둔다 */
+    /* 실제 동그라미 라디오 버튼은 숨기되, 탭 영역을 누르면 여전히 클릭되게 둔다.
+       입력 자체를 숨기는 것과, BaseWeb이 그 입력을 감싸는 장식용 첫 번째 div를
+       별도로 그리는 경우까지 둘 다 대비해 이중으로 숨긴다. */
     div[data-testid="stRadio"] [role="radiogroup"] label input {
         position: absolute;
         opacity: 0;
         width: 1px;
         height: 1px;
         pointer-events: none;
+    }
+    div[data-testid="stRadio"] [role="radiogroup"] > label > div:first-child {
+        display: none !important;
     }
 
     /* 선택된 탭 강조 (iPad Safari 포함 최신 브라우저는 :has() 지원) */
@@ -2776,5 +2783,5 @@ elif st.session_state.selected_mode == "🔍 첨삭":
     render_mistake_review_tab()
 elif st.session_state.selected_mode == "💮 개념PASS":
     render_pass_tab()
-elif st.session_state.selected_mode == "👤 마이페이지":
+elif st.session_state.selected_mode == "👤 마이":
     render_my_page_tab()
