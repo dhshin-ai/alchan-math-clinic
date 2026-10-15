@@ -616,16 +616,19 @@ def render_teacher_dashboard():
     if just_set:
         st.info(f"📌 현재 출제: **{just_set['grade']} - {just_set['mission']}**")
         app_url = st.secrets.get("APP_URL", "") or KAKAO_REDIRECT_URI
-        qr_bytes = generate_qr_png_bytes(app_url)
+        # ?tab=pass를 붙여야 학생이 QR을 찍었을 때 기본 화면이 아니라 바로
+        # '💮 개념 PASS' 탭으로 떨어진다 (app.py 상단의 query_params 감지 로직 참고).
+        qr_url = app_url + ("&tab=pass" if "?" in app_url else "?tab=pass")
+        qr_bytes = generate_qr_png_bytes(qr_url)
         if qr_bytes:
             qr_c1, qr_c2, qr_c3 = st.columns([1, 2, 1])
             with qr_c2:
                 st.image(qr_bytes, use_container_width=True)
-            st.caption(f"📱 학생들이 이 QR을 카메라로 찍으면 바로 접속돼요 → {app_url}")
+            st.caption(f"📱 학생들이 이 QR을 카메라로 찍으면 바로 '개념 PASS' 화면으로 들어가요 → {qr_url}")
         else:
             st.warning(
                 "QR코드 생성 라이브러리(qrcode)가 아직 이 환경에 설치되지 않았어요. "
-                f"학생들에게 이 주소를 직접 알려주세요 → {app_url}"
+                f"학생들에게 이 주소를 직접 알려주세요 → {qr_url}"
             )
 
     st.markdown("---")
@@ -1870,6 +1873,18 @@ if "teacher_mode" not in st.session_state:
     st.session_state.teacher_mode = False
 if "selected_mode" not in st.session_state:
     st.session_state.selected_mode = MODE_OPTIONS[0]
+
+# ==========================================
+# 📱 QR코드로 바로 '💮 개념 PASS'로 직행
+# 선생님 대시보드가 찍는 QR은 앱 주소 끝에 "?tab=pass"를 붙여서 만든다. 로그인이
+# 안 된 학생은 이 상태로 로그인 게이트를 먼저 보고, 로그인 버튼이 get_kakao_login_url
+# (state=selected_mode)로 이 선택을 카카오 왕복에 실어 보내므로 로그인 후에도 그대로
+# PASS 탭에 떨어진다. 한 번 반영한 뒤 쿼리 파라미터를 지워야 - 안 지우면 다른 탭을
+# 눌러도 다음 리런마다 계속 PASS 탭으로 되돌아가 버린다.
+# ==========================================
+if st.query_params.get("tab") == "pass":
+    st.session_state.selected_mode = "💮 개념PASS"
+    st.query_params.clear()
 
 st.title("✏️ 알찬학원 신다혜 쌤의 1:1 수학 클리닉")
 
