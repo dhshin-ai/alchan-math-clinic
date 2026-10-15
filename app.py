@@ -2448,7 +2448,25 @@ def render_pass_tab():
         if today_scope:
             st.info(f"📌 **오늘의 미션: {selected_grade} - {today_scope}**")
         else:
-            st.warning("오늘의 지정된 개념이 없습니다. 선생님이 범위를 등록하면 도전할 수 있어요!")
+            st.markdown(
+                """
+                <div style="
+                    background: linear-gradient(135deg, #FFF9EC, #FFF3DC);
+                    border: 1px solid rgba(255, 184, 77, 0.35);
+                    border-radius: 18px;
+                    padding: 1.7rem 1.4rem;
+                    text-align: center;
+                    margin: 0.8rem 0 1.2rem;
+                ">
+                    <div style="font-size: 2.2rem; margin-bottom: 0.5rem;">🌤️</div>
+                    <div style="font-size: 1rem; color: #92661A; font-weight: 700; line-height: 1.7;">
+                        오늘은 아직 등록된 미션이 없어!<br>
+                        푹 쉬거나 마이페이지에서 이전 미션을 복습해 보자 👏
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
         if st.button(
             "🚀 PASS 도전하기",
@@ -2601,6 +2619,10 @@ def render_pass_tab():
                 persist_current_student()
                 st.rerun()
         else:
+            st.caption(
+                "💡 인스타그램/카카오톡 인앱 브라우저에서 입력이 잘 안 되면, "
+                "우측 상단 메뉴를 눌러 [Safari/Chrome으로 열기]를 해줘!"
+            )
             if pass_answer := st.chat_input("여기에 답변을 적어줘!", key="pass_chat_input"):
                 st.session_state.pass_messages.append({"role": "user", "content": pass_answer})
 
