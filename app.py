@@ -180,20 +180,36 @@ def fetch_pass_records_for_date(date_str, grade="전체"):
 
     '데이터 0건'과 '조회 실패'를 구분해야 하므로 (성공 여부, 행 목록, 에러 메시지)
     튜플로 돌려준다.
+
+    users.pass_grade 컬럼이 라이브 환경에 아직 없는 경우(42703)를 대비해, 먼저
+    pass_grade까지 포함한 조인을 시도하고 실패하면 nickname만 조인해서 한 번 더
+    시도한다 - 그러면 목록 자체는 깨지지 않고 나오되, 학년 필터/학년 칼럼은
+    컬럼이 생기기 전까지만 비어 보인다. users.student_grade는 '질문/첨삭' 탭의
+    과목명(예: 공통수학1)이라 PASS 학년(중2, 고1(원종) 등)과 값 자체가 다르므로
+    대체값으로 쓰지 않는다 - 그 컬럼은 이전 작업에서 이미 users 테이블에 없는
+    것으로 확인되어 제거했다.
     """
     if not supabase:
         return False, [], "Supabase 연결 정보(SUPABASE_URL/SUPABASE_SERVICE_KEY)가 설정되지 않았습니다."
     try:
         day_start = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=KST)
         day_end = day_start + timedelta(days=1)
-        res = (
-            supabase.table("pass_records")
-            .select("*, users(nickname, pass_grade)")
-            .gte("completed_at", day_start.isoformat())
-            .lt("completed_at", day_end.isoformat())
-            .order("completed_at", desc=True)
-            .execute()
-        )
+
+        def _query(select_str):
+            return (
+                supabase.table("pass_records")
+                .select(select_str)
+                .gte("completed_at", day_start.isoformat())
+                .lt("completed_at", day_end.isoformat())
+                .order("completed_at", desc=True)
+                .execute()
+            )
+
+        try:
+            res = _query("*, users(nickname, pass_grade)")
+        except Exception:
+            res = _query("*, users(nickname)")
+
         rows = res.data or []
         if grade and grade != "전체":
             rows = [r for r in rows if _embedded_user(r).get("pass_grade") == grade]
@@ -373,22 +389,30 @@ def persist_current_student():
     바로 써 넣으므로, 여기서는 users 한 줄만 최신 상태로 맞추면 된다.
 
     student_grade('질문/첨삭' 과목)는 넣지 않는다 - 실제 Supabase users 테이블에 그
-    컬럼이 없어서(42703) 포함시키면 이 upsert 전체가 매번 조용히 실패해 nickname/
-    pass_grade조차 저장되지 않았다. 과목 선택은 이제 세션에만 남는 값이라 로그인마다
-    다시 골라야 하지만, 그 대신 나머지 필드는 실제로 저장된다.
+    컬럼이 없어서(42703) 포함시키면 이 upsert 전체가 매번 조용히 실패했다. pass_grade도
+    같은 문제가 확인됐다 - 컬럼이 없는 환경에서는 pass_grade를 포함한 upsert 전체가
+    매번 실패해 nickname/updated_at조차 저장되지 않는다. 그래서 먼저 pass_grade까지
+    포함해서 시도하고, 그 한 번이 실패하면 pass_grade를 뺀 payload로 즉시 재시도한다 -
+    컬럼이 없어도 최소한 nickname/updated_at은 저장되고, 컬럼이 생기면(아래 ALTER TABLE)
+    코드를 안 고쳐도 pass_grade도 다시 저장되기 시작한다.
     """
     kakao_id = st.session_state.get("kakao_id")
     if not (supabase and kakao_id):
         return
+    payload = {
+        "kakao_id": kakao_id,
+        "nickname": st.session_state.student_name,
+        "pass_grade": st.session_state.get("pass_grade", ""),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
     try:
-        supabase.table("users").upsert({
-            "kakao_id": kakao_id,
-            "nickname": st.session_state.student_name,
-            "pass_grade": st.session_state.get("pass_grade", ""),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).execute()
+        supabase.table("users").upsert(payload).execute()
     except Exception:
-        pass
+        try:
+            payload.pop("pass_grade", None)
+            supabase.table("users").upsert(payload).execute()
+        except Exception:
+            pass
 
 
 def upsert_question_archive_entry(state_prefix, feature_label, messages_key):

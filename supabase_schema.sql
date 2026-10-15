@@ -14,6 +14,12 @@ create extension if not exists pgcrypto;
 --    값으로 바꿔 둔 상태다. 나중에 컬럼을 추가해 영구 저장하려면 여기 `student_grade
 --    text`를 추가한 뒤 app.py의 persist_current_student()/fetch_all_chat_history()도
 --    같이 되돌려야 한다.
+--    주의 2: pass_grade도 이 파일에는 있지만 실제 운영 테이블에는 없는 상태가
+--    확인됐다(42703). app.py는 이제 이 컬럼이 없어도 크래시하지 않고 조용히
+--    저장/조회를 건너뛰도록 방어 처리돼 있지만, '개념 PASS' 반/학년을 로그인 간에
+--    실제로 기억시키려면(지금 설계가 의도한 동작) 아래 SQL을 Supabase SQL Editor에서
+--    한 번 실행해야 한다:
+--        alter table users add column if not exists pass_grade text;
 create table if not exists users (
     kakao_id      text primary key,
     nickname      text not null default '',
