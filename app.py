@@ -352,6 +352,9 @@ def load_student_data(kakao_id):
         return {
             "kakao_id": kakao_id,
             "nickname": user_row.get("nickname", ""),
+            # 실제 users 테이블에 student_grade 컬럼이 없어 늘 None - select("*")라
+            # 에러는 안 나지만, persist_current_student()가 더는 이 값을 쓰지 않으므로
+            # 다음 로그인 때 과목을 다시 선택해야 한다(의도된 동작).
             "student_grade": user_row.get("student_grade"),
             "pass_grade": user_row.get("pass_grade", ""),
             "question_archive": archive,
@@ -363,11 +366,16 @@ def load_student_data(kakao_id):
 
 
 def persist_current_student():
-    """로그인한 학생의 users 행(닉네임/과목/PASS용 학년)을 upsert한다.
+    """로그인한 학생의 users 행(닉네임/PASS용 학년)을 upsert한다.
 
     대화 기록(chat_history)과 PASS 기록(pass_records)은 발생하는 그 순간
     upsert_question_archive_entry() / insert_pass_record()가 각각 자기 테이블에
     바로 써 넣으므로, 여기서는 users 한 줄만 최신 상태로 맞추면 된다.
+
+    student_grade('질문/첨삭' 과목)는 넣지 않는다 - 실제 Supabase users 테이블에 그
+    컬럼이 없어서(42703) 포함시키면 이 upsert 전체가 매번 조용히 실패해 nickname/
+    pass_grade조차 저장되지 않았다. 과목 선택은 이제 세션에만 남는 값이라 로그인마다
+    다시 골라야 하지만, 그 대신 나머지 필드는 실제로 저장된다.
     """
     kakao_id = st.session_state.get("kakao_id")
     if not (supabase and kakao_id):
@@ -376,7 +384,6 @@ def persist_current_student():
         supabase.table("users").upsert({
             "kakao_id": kakao_id,
             "nickname": st.session_state.student_name,
-            "student_grade": st.session_state.student_grade,
             "pass_grade": st.session_state.get("pass_grade", ""),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }).execute()
@@ -465,13 +472,18 @@ def fetch_all_chat_history():
     '데이터 0건'과 '조회 자체가 실패함'을 구분해야 하므로 (성공 여부, 행 목록, 에러 메시지)
     튜플로 돌려준다. 과거에는 모든 실패를 조용히 빈 리스트로 뭉개서(except: return []),
     실제 쿼리/권한 오류가 나도 '학생 질문이 0건'인 것처럼 보이는 문제가 있었다.
+
+    users(nickname)만 조인한다 - student_grade는 실제 Supabase users 테이블에 그
+    컬럼이 없어서(42703 column does not exist) 조인에 넣으면 PostgREST가 요청 전체를
+    거부한다. '질문/첨삭' 과목 선택은 이제 세션에만 있는 값이라 DB 조인으로는 복원할
+    수 없다 - persist_current_student()도 더는 그 컬럼에 쓰지 않는다.
     """
     if not supabase:
         return False, [], "Supabase 연결 정보(SUPABASE_URL/SUPABASE_SERVICE_KEY)가 설정되지 않았습니다."
     try:
         res = (
             supabase.table("chat_history")
-            .select("*, users(nickname, student_grade)")
+            .select("*, users(nickname)")
             .order("created_at", desc=True)
             .execute()
         )
@@ -659,7 +671,6 @@ def render_teacher_dashboard():
             student_preview, ai_preview = _preview_texts(messages)
             table_rows.append({
                 "닉네임": user_info.get("nickname") or "익명 학생",
-                "학년": user_info.get("student_grade") or "-",
                 "모드": row.get("feature", "-"),
                 "시각": _iso_to_kst_label(row.get("created_at")),
                 "학생 질문": student_preview,
@@ -671,11 +682,10 @@ def render_teacher_dashboard():
         for row in chat_rows:
             user_info = _embedded_user(row)
             nickname = user_info.get("nickname") or "익명 학생"
-            grade = user_info.get("student_grade") or "-"
             feature = row.get("feature", "-")
             created_label = _iso_to_kst_label(row.get("created_at"))
             messages = _deserialize_messages(row.get("messages"))
-            with st.expander(f"👤 {nickname} ({grade}) · {feature} · {created_label}"):
+            with st.expander(f"👤 {nickname} · {feature} · {created_label}"):
                 st.caption(f"🆔 카카오 회원번호: {row.get('kakao_id', '-')}")
                 _render_msg_list(messages)
 
@@ -855,7 +865,8 @@ def inject_custom_css():
     }
 
     /* 사이드바는 완전히 숨기지 않고 기본 접힘(collapsed) 상태로만 둔다.
-       맨 아래 "선생님 모드" 비밀번호 입력칸이 여기 들어있다 (시크릿 선생님 대시보드 진입용). */
+       로그아웃 버튼이 여기 들어있다. "선생님 모드" 진입은 태블릿/모바일에서 사이드바를
+       열기 번거로운 문제 때문에 '👤 마이페이지' 화면 맨 아래로 옮겼다. */
 
     /* ==========================================
        📱 모바일 앱 셸 - Streamlit 기본 크롬 숨기기 + 폰 화면 폭으로 고정
@@ -1870,9 +1881,10 @@ if not supabase:
     )
 
 # ==========================================
-# 🕵️ 시크릿 선생님 모드 (사이드바 맨 아래, 학생 화면은 그대로 평범한 접힌 사이드바)
-# 비밀번호가 맞으면 학생 로그인 절차 없이 바로 대시보드로 진입한다.
-# (로그아웃 버튼도 여기 둔다 - 메인 화면에는 로그인 상태를 알리는 텍스트를 일절 띄우지 않는다)
+# 🔓 로그아웃 (사이드바, 학생 화면은 그대로 평범한 접힌 사이드바)
+# "선생님 모드" 진입은 태블릿/모바일에서 사이드바를 열기 번거로워서
+# '👤 마이페이지' 화면 맨 아래의 render_teacher_entry_point()로 옮겼다.
+# (메인 화면에는 로그인 상태를 알리는 텍스트를 일절 띄우지 않는다)
 # ==========================================
 with st.sidebar:
     if st.session_state.authenticated:
@@ -1887,11 +1899,6 @@ with st.sidebar:
             ]:
                 st.session_state.pop(key, None)
             st.rerun()
-
-    st.markdown("<div style='height: 55vh;'></div>", unsafe_allow_html=True)
-    teacher_pw_input = st.text_input("선생님 모드", type="password", key="teacher_pw_input")
-    if teacher_pw_input and teacher_pw_input == TEACHER_DASHBOARD_PASSWORD:
-        st.session_state.teacher_mode = True
 
 if st.session_state.teacher_mode:
     render_teacher_dashboard()
@@ -2544,22 +2551,45 @@ def render_my_page_tab():
 
     if not st.session_state.authenticated:
         render_login_required_gate("👤 마이페이지")
-        return
+    else:
+        # A. 닉네임 + 스트릭 배지, B. 스탬프판 - 탭으로 가리지 않고 화면 맨 위에 항상 보이게
+        st.markdown(f"#### 👋 {st.session_state.student_name} 님")
+        render_streak_badge(st.session_state.pass_records)
+        render_stamp_board(st.session_state.pass_records)
+        st.markdown("---")
 
-    # A. 닉네임 + 스트릭 배지, B. 스탬프판 - 탭으로 가리지 않고 화면 맨 위에 항상 보이게
-    st.markdown(f"#### 👋 {st.session_state.student_name} 님")
-    render_streak_badge(st.session_state.pass_records)
-    render_stamp_board(st.session_state.pass_records)
+        # C. 오답노트 / PASS 포토카드 보관함만 st.tabs로 분리
+        tab_notes, tab_vault = st.tabs(["📝 오답노트", "🎴 PASS 포토카드 보관함"])
+
+        with tab_notes:
+            render_question_archive_cards()
+
+        with tab_vault:
+            render_pass_card_vault()
+
+    # 로그인 여부와 무관하게 화면 맨 아래에 항상 둔다 - 선생님은 학생으로 로그인할
+    # 필요 없이 바로 여기서 대시보드로 들어간다.
+    render_teacher_entry_point()
+
+
+def render_teacher_entry_point():
+    """'👤 마이페이지' 화면 맨 아래의 은은한 선생님 모드 진입 지점.
+
+    태블릿/모바일 현장 테스트에서 사이드바를 열어 비밀번호를 입력하는 게 너무
+    불편하다는 피드백을 받아, 사이드바 대신 터치하기 쉬운 탭 화면 맨 아래로
+    옮겼다. 접힌 expander 자체가 "버튼"이고, 펼치면 비밀번호 입력 폼이 나온다.
+    """
     st.markdown("---")
-
-    # C. 오답노트 / PASS 포토카드 보관함만 st.tabs로 분리
-    tab_notes, tab_vault = st.tabs(["📝 오답노트", "🎴 PASS 포토카드 보관함"])
-
-    with tab_notes:
-        render_question_archive_cards()
-
-    with tab_vault:
-        render_pass_card_vault()
+    with st.expander("👨‍🏫 선생님 모드 진입"):
+        teacher_pw_input = st.text_input(
+            "비밀번호", type="password", key="teacher_pw_input"
+        )
+        if st.button("입장하기", key="teacher_mode_enter_btn", use_container_width=True):
+            if teacher_pw_input and teacher_pw_input == TEACHER_DASHBOARD_PASSWORD:
+                st.session_state.teacher_mode = True
+                st.rerun()
+            else:
+                st.error("비밀번호가 올바르지 않습니다.")
 
 
 # st.tabs는 파이썬에서 활성 탭을 지정할 방법이 없어 카카오 로그인 리다이렉트 후

@@ -9,11 +9,15 @@ create extension if not exists pgcrypto;
 
 -- 1) users: 카카오로 로그인한 학생(또는 관리자) 1명당 1행.
 --    kakao_id가 카카오 OAuth가 돌려주는 고유 회원번호이자 기본키다.
+--    주의: '질문/첨삭' 탭 과목 선택(student_grade)은 저장하지 않는다 - 실제 운영 중인
+--    테이블에 그 컬럼이 없어서(42703 column does not exist) app.py가 세션에만 두는
+--    값으로 바꿔 둔 상태다. 나중에 컬럼을 추가해 영구 저장하려면 여기 `student_grade
+--    text`를 추가한 뒤 app.py의 persist_current_student()/fetch_all_chat_history()도
+--    같이 되돌려야 한다.
 create table if not exists users (
     kakao_id      text primary key,
     nickname      text not null default '',
-    student_grade text,                 -- '질문/첨삭' 탭용 (2022 개정 교육과정 과목명)
-    pass_grade    text,                 -- '개념 PASS' 탭용 (중1~고3)
+    pass_grade    text,                 -- '개념 PASS' 탭용 (중1~고3 등)
     created_at    timestamptz not null default now(),
     updated_at    timestamptz not null default now()
 );
