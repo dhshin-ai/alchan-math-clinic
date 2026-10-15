@@ -218,9 +218,9 @@ def fetch_pass_records_for_date(date_str, grade="전체"):
             return (
                 supabase.table("pass_records")
                 .select(select_str)
-                .gte("completed_at", day_start.isoformat())
-                .lt("completed_at", day_end.isoformat())
-                .order("completed_at", desc=True)
+                .gte("created_at", day_start.isoformat())
+                .lt("created_at", day_end.isoformat())
+                .order("created_at", desc=True)
                 .execute()
             )
 
@@ -372,14 +372,14 @@ def load_student_data(kakao_id):
             supabase.table("pass_records")
             .select("*")
             .eq("kakao_id", kakao_id)
-            .order("completed_at", desc=False)
+            .order("created_at", desc=False)
             .execute()
         )
         pass_records = [
             {
                 "topic": row.get("topic", ""),
                 "concept_summary": row.get("concept_summary") or row.get("topic", ""),
-                "completed_at": _iso_to_kst_label(row.get("completed_at")),
+                "completed_at": _iso_to_kst_label(row.get("created_at")),
             }
             for row in (pass_res.data or [])
         ]
@@ -482,8 +482,12 @@ def upsert_question_archive_entry(state_prefix, feature_label, messages_key):
             pass
 
 
-def insert_pass_record(topic, concept_summary, completed_at_dt):
-    """PASS 통과 1건을 pass_records 테이블에 즉시 저장한다."""
+def insert_pass_record(topic, concept_summary):
+    """PASS 통과 1건을 pass_records 테이블에 즉시 저장한다.
+
+    pass_records 테이블에는 completed_at 컬럼이 없다(42703) - 통과 시각은
+    Supabase 기본값으로 자동 채워지는 created_at을 그대로 쓴다.
+    """
     kakao_id = st.session_state.get("kakao_id")
     if not (supabase and kakao_id):
         return
@@ -492,7 +496,6 @@ def insert_pass_record(topic, concept_summary, completed_at_dt):
             "kakao_id": kakao_id,
             "topic": topic,
             "concept_summary": concept_summary,
-            "completed_at": completed_at_dt.isoformat(),
         }).execute()
     except Exception:
         pass
@@ -762,7 +765,7 @@ def render_teacher_dashboard():
                 {
                     "닉네임": _embedded_user(r).get("nickname") or "익명 학생",
                     "학년": _embedded_user(r).get("pass_grade") or "-",
-                    "통과 시각": _iso_to_kst_label(r.get("completed_at"), fmt="%H:%M"),
+                    "통과 시각": _iso_to_kst_label(r.get("created_at"), fmt="%H:%M"),
                     "통과 미션": r.get("topic", "-"),
                 }
                 for r in report_rows
@@ -2684,7 +2687,6 @@ def render_pass_tab():
                                 insert_pass_record(
                                     st.session_state.pass_topic,
                                     summary or st.session_state.pass_topic,
-                                    now_kst,
                                 )
                                 st.session_state.pop("pass_card_bytes", None)
                                 st.session_state.pass_messages.append({"role": "assistant", "content": bot_reply})
