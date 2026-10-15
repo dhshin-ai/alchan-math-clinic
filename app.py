@@ -2623,7 +2623,23 @@ def render_pass_tab():
                 "💡 인스타그램/카카오톡 인앱 브라우저에서 입력이 잘 안 되면, "
                 "우측 상단 메뉴를 눌러 [Safari/Chrome으로 열기]를 해줘!"
             )
-            if pass_answer := st.chat_input("여기에 답변을 적어줘!", key="pass_chat_input"):
+            with st.form(key="pass_answer_form", clear_on_submit=True):
+                pass_answer_draft = st.text_area(
+                    "답변 작성",
+                    key="pass_answer_text",
+                    placeholder="핵심 키워드를 포함해서 1~2줄로 설명해 봐! (예: 조건, 공식 유도 과정 등)",
+                    height=140,
+                    label_visibility="collapsed",
+                )
+                pass_submitted = st.form_submit_button(
+                    "💮 미션 제출하고 검사받기",
+                    use_container_width=True,
+                    type="primary",
+                )
+
+            if pass_submitted and not pass_answer_draft.strip():
+                st.warning("답변을 입력해 주세요.")
+            elif pass_submitted and (pass_answer := pass_answer_draft.strip()):
                 st.session_state.pass_messages.append({"role": "user", "content": pass_answer})
 
                 if not api_key:
