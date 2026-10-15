@@ -16,7 +16,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 st.set_page_config(
-    page_title="다혜T의 1:1 수학 PASS",
+    page_title="다혜T의 1:1 수학 클리닉",
     page_icon="👩‍🏫",
     layout="centered",  # 모바일 앱 셸 - 480px 폭으로 CSS에서 한 번 더 강제한다
     initial_sidebar_state="collapsed",
@@ -1967,13 +1967,13 @@ st.markdown(
         margin-bottom: 1rem;
     ">
         <div style="font-size: 1.45rem; font-weight: 900; color: #3A449A; letter-spacing: -0.01em;">
-            👩‍🏫 다혜T의 1:1 수학 PASS
+            👩‍🏫 다혜T의 1:1 수학 클리닉
         </div>
-        <div style="font-size: 0.92rem; font-weight: 700; color: #00A19D; margin-top: 0.3rem;">
-            매일매일 완벽하게 끝내는 개념 클리닉
+        <div style="font-size: 0.82rem; font-weight: 600; color: #64748B; margin-top: 0.35rem; line-height: 1.5;">
+            빈틈없는 오답 분석부터 완벽한 실전 대비까지, 나만의 맞춤 수학 솔루션
         </div>
-        <div style="font-size: 0.86rem; color: #475569; margin-top: 0.6rem; line-height: 1.5;">
-            안녕! 다혜T의 1:1 수학 PASS에 온 걸 환영해 😊
+        <div style="font-size: 0.86rem; color: #475569; margin-top: 0.7rem; line-height: 1.5;">
+            안녕! 다혜T의 1:1 수학 클리닉에 온 걸 환영해 😊 선생님이랑 같이 너의 진짜 수학 실력을 만들어보자!
         </div>
     </div>
     """,
