@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from urllib.parse import quote
 import anthropic
 import streamlit as st
+from utils.math_ocr import recognize_handwriting_latex
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
@@ -2195,11 +2196,48 @@ def transcribe_handwriting(image_bytes, media_type):
     return get_response_text(response)
 
 
+def transcribe_handwriting_hybrid(preprocessed_bytes):
+    """1단계(전사): Mathpix 전문 수식 OCR을 먼저 시도하고, 키가 없거나 호출이 실패하면
+    기존 Vision LLM 전사(transcribe_handwriting)로 안전하게 전환한다 - 앱이 멈추지 않는다.
+
+    돌려주는 값: (전사된 텍스트, 사용된 엔진("mathpix"/"vision_llm"), Mathpix 신뢰도 또는 None)
+    """
+    ok, result, _err = recognize_handwriting_latex(preprocessed_bytes)
+    if ok:
+        transcribed = result.get("text") or result.get("latex_styled") or ""
+        if transcribed:
+            return transcribed, "mathpix", result.get("confidence")
+    transcribed = transcribe_handwriting(preprocessed_bytes, "image/jpeg")
+    return transcribed, "vision_llm", None
+
+
+def _extract_latex_lines(transcribed_text):
+    """전사 결과 문자열에서 줄마다 LaTeX 알짹이만 뽑아 st.latex 렌더링용 리스트로 돌려준다.
+
+    Vision LLM 전사는 "[1줄] $수식$" 형식이고 Mathpix 전사는 줄마다 "$수식$"/"$$수식$$"만
+    오므로, 두 형식 모두에서 '[n줄]' 라벨과 '$' 구분자를 벗겨낸다.
+    """
+    lines = []
+    for raw_line in (transcribed_text or "").splitlines():
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        raw_line = re.sub(r"^\[\d+\s*줄\]\s*", "", raw_line)
+        raw_line = raw_line.strip("$").strip()
+        if raw_line:
+            lines.append(raw_line)
+    return lines
+
+
 HANDWRITING_VERIFY_SYSTEM_PROMPT = (
-    "각 줄(Line) 사이의 수학적 변형 과정을 단계별로 검증해라.\n"
-    "- 만약 오류가 있다면 정확히 '몇 번째 줄'에서 어떤 개념/부호/연산 오류가 발생했는지 짚어라.\n"
-    "- 정답을 바로 알려주지 말고, 학생이 그 줄을 다시 생각해볼 수 있는 소크라테스식 역질문(힌트) 1개를 작성해라.\n"
-    "- 모든 줄이 논리적으로 타당하면, 어디까지 잘 풀었는지 짧게 칭찬하고 다음 단계를 유도하는 질문을 던져라."
+    "너는 꼼꼼한 수학 클리닉 강사다. 제공된 줄별 LaTeX 수식을 순서대로 대수적으로 검증하라.\n"
+    "1. 각 행 사이의 식 변형(전개, 인수분해, 이항 등) 과정에서 누락된 항이나 부호 실수가 있는지 엄밀하게 검증하라.\n"
+    "2. 특히 (a+b)^2 전개 시 중간항(2ab) 누락 여부를 반드시 확인하라.\n"
+    "3. 오류가 발견되면 '몇 번째 줄'에서 어떤 실수가 일어났는지 정확히 짚어내라.\n"
+    "4. 학생에게 정답을 주지 말고, 스스로 식을 고칠 수 있는 유도 힌트(소크라테스식 질문) 1줄을 작성하라.\n\n"
+    "★ [출력 형식 - 반드시 이 2줄 형식 그대로, 다른 설명 없이]:\n"
+    "DIAGNOSIS: (몇 번째 줄에서 어떤 오류인지 1줄로 요약. 오류가 없으면 어디까지 잘 풀었는지 1줄로 요약)\n"
+    "HINT: (정답을 알려주지 않는 소크라테스식 역질문 1줄. 수식은 '$...$'로 표기)"
 )
 
 
@@ -2219,6 +2257,24 @@ def verify_transcribed_solution(transcribed_text, student_grade):
         }],
     )
     return get_response_text(response)
+
+
+def parse_handwriting_diagnosis(raw_text):
+    """verify_transcribed_solution()의 'DIAGNOSIS: .../HINT: ...' 2줄 출력을 분리한다.
+
+    모델이 형식을 못 지켜 두 라벨이 전혀 안 보이면, 원문 전체를 진단 결과로 돌려서
+    (힌트는 빈 문자열) 적어도 화면에 뭔가는 보이게 한다.
+    """
+    diagnosis, hint = "", ""
+    for line in (raw_text or "").splitlines():
+        line = line.strip()
+        if line.upper().startswith("DIAGNOSIS:"):
+            diagnosis = line.split(":", 1)[1].strip()
+        elif line.upper().startswith("HINT:"):
+            hint = line.split(":", 1)[1].strip()
+    if not diagnosis and not hint:
+        diagnosis = (raw_text or "").strip()
+    return diagnosis, hint
 
 
 def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_uploader, caption_text):
@@ -2320,19 +2376,40 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
             )
 
             try:
-                with st.spinner("1단계: 손글씨 수식을 줄별로 판독하고 있어요..."):
+                with st.spinner("전문 수식 엔진이 손글씨를 LaTeX로 판독 중입니다..."):
                     preprocessed_bytes = preprocess_handwriting_photo(s_bytes)
-                    transcribed = transcribe_handwriting(preprocessed_bytes, "image/jpeg")
-                st.markdown("📝 **판독된 풀이 과정 (미리보기)**")
-                st.markdown(transcribed)
+                    transcribed, ocr_source, ocr_confidence = transcribe_handwriting_hybrid(preprocessed_bytes)
 
-                with st.spinner("2단계: 풀이 논리와 오류를 점검하고 있어요..."):
-                    diagnosis = verify_transcribed_solution(transcribed, st.session_state.student_grade)
+                st.markdown("📝 **판독된 풀이 과정**")
+                latex_lines = _extract_latex_lines(transcribed)
+                if latex_lines:
+                    for latex_line in latex_lines:
+                        st.latex(latex_line)
+                else:
+                    st.markdown(transcribed)
+                if ocr_source == "mathpix":
+                    confidence_label = (
+                        f" (신뢰도 {round(ocr_confidence * 100)}%)"
+                        if isinstance(ocr_confidence, (int, float)) else ""
+                    )
+                    st.caption(f"✨ Mathpix 전문 수식 엔진으로 판독했어요{confidence_label}")
+                else:
+                    st.caption("🤖 Vision AI로 판독했어요 (대체 모드)")
+
+                with st.spinner("다혜T의 풀이 첨삭 및 힌트를 분석 중입니다..."):
+                    raw_diagnosis = verify_transcribed_solution(transcribed, st.session_state.student_grade)
+                diagnosis, hint = parse_handwriting_diagnosis(raw_diagnosis)
+
+                st.markdown(f"🔍 **진단 결과:** {diagnosis}")
+                if hint:
+                    st.markdown(f"💡 **다혜T의 역질문 힌트:** {hint}")
 
                 bot_reply = (
                     f"📝 **판독된 풀이 과정**\n\n{transcribed}\n\n---\n\n"
-                    f"🔎 **다혜T의 풀이 진단**\n\n{diagnosis}"
+                    f"🔍 **진단 결과:** {diagnosis}"
                 )
+                if hint:
+                    bot_reply += f"\n\n💡 **다혜T의 역질문 힌트:** {hint}"
                 # 사진 제출 자체도 대화 기록에 남겨서 새로고침 후에도 사진 내역이 보이게 한다.
                 st.session_state[messages_key].append({
                     "role": "user",
