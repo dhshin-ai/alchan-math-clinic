@@ -2196,21 +2196,6 @@ def transcribe_handwriting(image_bytes, media_type):
     return get_response_text(response)
 
 
-def transcribe_handwriting_hybrid(preprocessed_bytes):
-    """1단계(전사): Mathpix 전문 수식 OCR을 먼저 시도하고, 키가 없거나 호출이 실패하면
-    기존 Vision LLM 전사(transcribe_handwriting)로 안전하게 전환한다 - 앱이 멈추지 않는다.
-
-    돌려주는 값: (전사된 텍스트, 사용된 엔진("mathpix"/"vision_llm"), Mathpix 신뢰도 또는 None)
-    """
-    ok, result, _err = recognize_handwriting_latex(preprocessed_bytes)
-    if ok:
-        transcribed = result.get("text") or result.get("latex_styled") or ""
-        if transcribed:
-            return transcribed, "mathpix", result.get("confidence")
-    transcribed = transcribe_handwriting(preprocessed_bytes, "image/jpeg")
-    return transcribed, "vision_llm", None
-
-
 def _extract_latex_lines(transcribed_text):
     """전사 결과 문자열에서 줄마다 LaTeX 알짹이만 뽑아 st.latex 렌더링용 리스트로 돌려준다.
 
@@ -2262,8 +2247,9 @@ def verify_transcribed_solution(transcribed_text, student_grade):
 def parse_handwriting_diagnosis(raw_text):
     """verify_transcribed_solution()의 'DIAGNOSIS: .../HINT: ...' 2줄 출력을 분리한다.
 
-    모델이 형식을 못 지켜 두 라벨이 전혀 안 보이면, 원문 전체를 진단 결과로 돌려서
-    (힌트는 빈 문자열) 적어도 화면에 뭔가는 보이게 한다.
+    돌려주는 값: (diagnosis, hint, parsed_ok). 모델이 형식을 못 지켜 두 라벨을 전혀
+    못 찾으면 parsed_ok=False를 돌려주고, 호출하는 쪽이 원문 전체를 그대로 화면에
+    보여줄 수 있도록 diagnosis에 원문 전체를 담아준다 - 화면이 빈칸으로 끝나지 않게.
     """
     diagnosis, hint = "", ""
     for line in (raw_text or "").splitlines():
@@ -2272,9 +2258,10 @@ def parse_handwriting_diagnosis(raw_text):
             diagnosis = line.split(":", 1)[1].strip()
         elif line.upper().startswith("HINT:"):
             hint = line.split(":", 1)[1].strip()
-    if not diagnosis and not hint:
+    parsed_ok = bool(diagnosis or hint)
+    if not parsed_ok:
         diagnosis = (raw_text or "").strip()
-    return diagnosis, hint
+    return diagnosis, hint, parsed_ok
 
 
 def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_uploader, caption_text):
@@ -2378,7 +2365,23 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
             try:
                 with st.spinner("전문 수식 엔진이 손글씨를 LaTeX로 판독 중입니다..."):
                     preprocessed_bytes = preprocess_handwriting_photo(s_bytes)
-                    transcribed, ocr_source, ocr_confidence = transcribe_handwriting_hybrid(preprocessed_bytes)
+                    mathpix_ok, mathpix_result, mathpix_err = recognize_handwriting_latex(preprocessed_bytes)
+
+                # Mathpix 호출 결과는 성공/실패 어느 쪽이든 조용히 넘기지 않고 화면에 바로 뱃지로 띄운다
+                # (디버깅 목적 - 어느 단계에서 왜 Vision LLM 폴백으로 넘어갔는지 바로 보여야 한다).
+                if mathpix_ok:
+                    confidence = mathpix_result.get("confidence")
+                    confidence_label = (
+                        f" (신뢰도: {round(confidence * 100)}%)" if isinstance(confidence, (int, float)) else ""
+                    )
+                    st.success(f"✅ Mathpix 수식 엔진 작동 완료{confidence_label}")
+                    transcribed = mathpix_result.get("text") or "\n".join(mathpix_result.get("latex_items", []))
+                    st.markdown("📝 **Mathpix가 판독한 원문**")
+                    st.code(transcribed or "(빈 응답)")
+                else:
+                    st.error(f"❌ Mathpix 호출 실패: {mathpix_err}")
+                    st.caption("🤖 Vision AI로 대체 판독을 진행할게요.")
+                    transcribed = transcribe_handwriting(preprocessed_bytes, "image/jpeg")
 
                 st.markdown("📝 **판독된 풀이 과정**")
                 latex_lines = _extract_latex_lines(transcribed)
@@ -2386,30 +2389,27 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                     for latex_line in latex_lines:
                         st.latex(latex_line)
                 else:
-                    st.markdown(transcribed)
-                if ocr_source == "mathpix":
-                    confidence_label = (
-                        f" (신뢰도 {round(ocr_confidence * 100)}%)"
-                        if isinstance(ocr_confidence, (int, float)) else ""
-                    )
-                    st.caption(f"✨ Mathpix 전문 수식 엔진으로 판독했어요{confidence_label}")
-                else:
-                    st.caption("🤖 Vision AI로 판독했어요 (대체 모드)")
+                    st.markdown(transcribed or "(인식된 내용이 없어요)")
 
                 with st.spinner("다혜T의 풀이 첨삭 및 힌트를 분석 중입니다..."):
                     raw_diagnosis = verify_transcribed_solution(transcribed, st.session_state.student_grade)
-                diagnosis, hint = parse_handwriting_diagnosis(raw_diagnosis)
+                diagnosis, hint, parsed_ok = parse_handwriting_diagnosis(raw_diagnosis)
 
-                st.markdown(f"🔍 **진단 결과:** {diagnosis}")
-                if hint:
-                    st.markdown(f"💡 **다혜T의 역질문 힌트:** {hint}")
+                if not parsed_ok:
+                    st.warning("⚠️ 정해진 형식을 찾지 못해 AI 원문을 그대로 보여드려요.")
+                    st.markdown(diagnosis or "(빈 응답)")
+                else:
+                    st.markdown(f"🔍 **진단 결과:** {diagnosis}")
+                    if hint:
+                        st.markdown(f"💡 **다혜T의 역질문 힌트:** {hint}")
 
-                bot_reply = (
-                    f"📝 **판독된 풀이 과정**\n\n{transcribed}\n\n---\n\n"
-                    f"🔍 **진단 결과:** {diagnosis}"
-                )
-                if hint:
-                    bot_reply += f"\n\n💡 **다혜T의 역질문 힌트:** {hint}"
+                bot_reply = f"📝 **판독된 풀이 과정**\n\n{transcribed}\n\n---\n\n"
+                if not parsed_ok:
+                    bot_reply += diagnosis or "(빈 응답)"
+                else:
+                    bot_reply += f"🔍 **진단 결과:** {diagnosis}"
+                    if hint:
+                        bot_reply += f"\n\n💡 **다혜T의 역질문 힌트:** {hint}"
                 # 사진 제출 자체도 대화 기록에 남겨서 새로고침 후에도 사진 내역이 보이게 한다.
                 st.session_state[messages_key].append({
                     "role": "user",
