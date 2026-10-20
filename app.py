@@ -13,7 +13,7 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 st.set_page_config(
     page_title="다혜T의 1:1 수학 클리닉",
@@ -2139,6 +2139,86 @@ def render_login_required_gate(feature_label):
         st.warning("카카오 로그인이 아직 설정되지 않았습니다. 선생님에게 문의해 주세요.")
 
 
+def preprocess_handwriting_photo(image_bytes, max_width=1600):
+    """스마트폰으로 찍은 손글씨 풀이 사진을 AI가 더 또렷하게 읽을 수 있게 전처리한다.
+
+    - ImageOps.exif_transpose로 EXIF Orientation 태그를 읽어 회전을 자동 보정한다
+      (세로로 찍은 사진이 가로로 눕혀져 업로드되는 흔한 문제 방지).
+    - 흑백 변환 + ImageOps.autocontrast(cutoff=2)로 연필선은 진하게, 종이 바탕(그림자 포함)은
+      밝게 끌어올려 대비를 극대화한다.
+    - 가로가 max_width(기본 1600px)를 넘으면 비율을 유지한 채 줄여 API 응답 지연을 줄인다.
+    """
+    img = Image.open(io.BytesIO(image_bytes))
+    img = ImageOps.exif_transpose(img)
+    img = img.convert("L")
+    img = ImageOps.autocontrast(img, cutoff=2)
+    if img.width > max_width:
+        ratio = max_width / img.width
+        img = img.resize((max_width, max(1, round(img.height * ratio))), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    return buf.getvalue()
+
+
+HANDWRITING_TRANSCRIBE_SYSTEM_PROMPT = (
+    "너는 손글씨 수식 전사 전문가다. 문제를 절대 풀거나 평가하지 마라. 사진 속 손글씨 풀이 "
+    "과정을 위에서부터 아래로 순서대로 읽고, 각 줄을 순수한 LaTeX 수식 텍스트로만 변환해라. "
+    "각 수식은 Streamlit 마크다운에서 바로 렌더링되도록 '$'로 감싸라. "
+    "(형식: [1줄] $수식$\n[2줄] $수식$\n...)"
+)
+
+
+def transcribe_handwriting(image_bytes, media_type):
+    """1단계(전사): 전처리된 손글씨 풀이 사진을 줄별 LaTeX 텍스트로만 전사한다 - 풀이/채점은 하지 않는다."""
+    client = anthropic.Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model=MODEL_NAME,
+        max_tokens=1500,
+        system=HANDWRITING_TRANSCRIBE_SYSTEM_PROMPT,
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": base64.b64encode(image_bytes).decode("utf-8"),
+                    },
+                },
+                {"type": "text", "text": "이 사진 속 손글씨 풀이를 위에서부터 줄별로 LaTeX로만 전사해줘."},
+            ],
+        }],
+    )
+    return get_response_text(response)
+
+
+HANDWRITING_VERIFY_SYSTEM_PROMPT = (
+    "각 줄(Line) 사이의 수학적 변형 과정을 단계별로 검증해라.\n"
+    "- 만약 오류가 있다면 정확히 '몇 번째 줄'에서 어떤 개념/부호/연산 오류가 발생했는지 짚어라.\n"
+    "- 정답을 바로 알려주지 말고, 학생이 그 줄을 다시 생각해볼 수 있는 소크라테스식 역질문(힌트) 1개를 작성해라.\n"
+    "- 모든 줄이 논리적으로 타당하면, 어디까지 잘 풀었는지 짧게 칭찬하고 다음 단계를 유도하는 질문을 던져라."
+)
+
+
+def verify_transcribed_solution(transcribed_text, student_grade):
+    """2단계(검증): 1단계 전사 결과(줄별 LaTeX)만 입력받아 논리 비약/연산 오류 위치를 추적한다 - 텍스트 전용 호출."""
+    client = anthropic.Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model=MODEL_NAME,
+        max_tokens=1200,
+        system=HANDWRITING_VERIFY_SYSTEM_PROMPT,
+        messages=[{
+            "role": "user",
+            "content": (
+                f"[과목: {student_grade}] 다음은 학생이 손글씨로 쓴 풀이를 줄별로 전사한 내용이다:\n\n"
+                f"{transcribed_text}\n\n위 줄들 사이의 수학적 변형 과정을 검증해줘."
+            ),
+        }],
+    )
+    return get_response_text(response)
+
+
 def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_uploader, caption_text):
     """'❓ 질문 클리닉'과 '🔍 오답 첨삭' 탭이 공유하는 렌더러.
 
@@ -2160,6 +2240,7 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
 
     uploaded_solution = None
     if with_solution_uploader:
+        st.caption("💡 tip: 연필선이 선명할수록, 그림자가 지지 않게 수직으로 찍을수록 AI가 더 정확하게 읽어요!")
         up_c1, up_c2 = st.columns(2)
         with up_c1:
             uploaded_problem = st.file_uploader(
@@ -2186,54 +2267,80 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
         # 새 사진 = 새 질문 → 오답노트에도 새 카드를 만든다 (이전 카드를 계속 수정하지 않도록 끊어준다).
         st.session_state[f"{state_prefix}_archive_entry_id"] = None
 
-        client = anthropic.Anthropic(api_key=api_key)
         p_bytes = uploaded_problem.getvalue()
 
-        if with_solution_uploader:
+        if with_solution_uploader and uploaded_solution:
+            # 손글씨 풀이 사진이 함께 올라온 경우: 1단계(전사) → 2단계(논리 검증)
+            # 2단계 파이프라인으로 처리한다. 둘 다 Vision으로 "읽고 바로 채점"하던
+            # 예전 방식은 전사 오류와 채점 오류가 뒤섞여 틀린 줄을 못 짚는 경우가 있었다.
             send_telegram_photo(p_bytes, st.session_state.student_name, f"{mode} - 문제")
-            content_blocks = [{
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": uploaded_problem.type,
-                    "data": base64.b64encode(p_bytes).decode("utf-8"),
-                },
-            }]
-            images_submitted = [{"bytes": p_bytes, "mime": uploaded_problem.type}]
-            label = "📷 문제 사진을 올렸어요!"
-            if uploaded_solution:
-                s_bytes = uploaded_solution.getvalue()
-                send_telegram_photo(s_bytes, st.session_state.student_name, f"{mode} - 풀이")
-                content_blocks.append({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": uploaded_solution.type,
-                        "data": base64.b64encode(s_bytes).decode("utf-8"),
-                    },
-                })
-                images_submitted.append({"bytes": s_bytes, "mime": uploaded_solution.type})
-                label = "📷 문제 + 풀이 사진을 올렸어요!"
-                api_text = (
-                    f"[모드: {mode} / 과목: {st.session_state.student_grade}] 문제 사진과 연습장 손글씨 풀이 사진 2장이 "
-                    "전달되었어. 첫 줄부터 줄 단위로 연산을 검증해서 잘한 점과 부호/계산 실수가 발생한 정확한 위치를 "
-                    "다정하게 지적해줘."
+            s_bytes = uploaded_solution.getvalue()
+            send_telegram_photo(s_bytes, st.session_state.student_name, f"{mode} - 풀이")
+
+            images_submitted = [
+                {"bytes": p_bytes, "mime": uploaded_problem.type},
+                {"bytes": s_bytes, "mime": uploaded_solution.type},
+            ]
+            label = "📷 문제 + 풀이 사진을 올렸어요!"
+            api_text = (
+                f"[모드: {mode} / 과목: {st.session_state.student_grade}] 문제 사진과 연습장 손글씨 풀이 사진 2장이 "
+                "전달되었어. 첫 줄부터 줄 단위로 연산을 검증해서 잘한 점과 부호/계산 실수가 발생한 정확한 위치를 "
+                "다정하게 지적해줘."
+            )
+
+            try:
+                with st.spinner("1단계: 손글씨 수식을 줄별로 판독하고 있어요..."):
+                    preprocessed_bytes = preprocess_handwriting_photo(s_bytes)
+                    transcribed = transcribe_handwriting(preprocessed_bytes, "image/jpeg")
+                st.markdown("📝 **판독된 풀이 과정 (미리보기)**")
+                st.markdown(transcribed)
+
+                with st.spinner("2단계: 풀이 논리와 오류를 점검하고 있어요..."):
+                    diagnosis = verify_transcribed_solution(transcribed, st.session_state.student_grade)
+
+                bot_reply = (
+                    f"📝 **판독된 풀이 과정**\n\n{transcribed}\n\n---\n\n"
+                    f"🔎 **다혜T의 풀이 진단**\n\n{diagnosis}"
                 )
-            else:
+                # 사진 제출 자체도 대화 기록에 남겨서 새로고침 후에도 사진 내역이 보이게 한다.
+                st.session_state[messages_key].append({
+                    "role": "user",
+                    "content": label,
+                    "images": images_submitted,
+                    "api_text": api_text,
+                })
+                st.session_state[messages_key].append({"role": "assistant", "content": bot_reply})
+                log_to_slack_and_gsheet(
+                    st.session_state.student_name, st.session_state.student_grade, mode, "풀이 검토 사진 제출", bot_reply,
+                    skip_telegram=True,
+                )
+                upsert_question_archive_entry(state_prefix, feature_label, messages_key)
+                persist_current_student()
+                st.rerun()
+            except Exception as e:
+                show_friendly_error(e)
+        else:
+            client = anthropic.Anthropic(api_key=api_key)
+
+            if with_solution_uploader:
+                # 풀이 사진 없이 문제 사진만 올라온 경우 - 기존처럼 단일 Vision 호출로 처리한다.
+                send_telegram_photo(p_bytes, st.session_state.student_name, f"{mode} - 문제")
                 api_text = (
                     f"[모드: {mode} / 과목: {st.session_state.student_grade}] 이 사진 안의 손글씨 풀이를 첫 줄부터 "
                     "줄 단위로 검증하여 잘한 점과 연산 실수가 발생한 정확한 위치를 콕 짚어라."
                 )
-            content_blocks.append({"type": "text", "text": api_text})
-            spinner_text = "손글씨 풀이를 줄 단위로 분석하는 중입니다..."
-            log_label = "풀이 검토 사진 제출"
-        else:
-            send_telegram_photo(p_bytes, st.session_state.student_name, mode)
-            api_text = (
-                f"[모드: {mode} / 과목: {st.session_state.student_grade}] 먼저 1단계로 "
-                "[과목 > 대단원 > 중단원 > 세부 대표유형명] 4단계로 세부 출제 유형을 밝히고, 인식한 조건이나 각도를 "
-                "먼저 확인한 뒤 2단계 힌트 질문을 던져라."
-            )
+                spinner_text = "손글씨 풀이를 줄 단위로 분석하는 중입니다..."
+                log_label = "풀이 검토 사진 제출"
+            else:
+                send_telegram_photo(p_bytes, st.session_state.student_name, mode)
+                api_text = (
+                    f"[모드: {mode} / 과목: {st.session_state.student_grade}] 먼저 1단계로 "
+                    "[과목 > 대단원 > 중단원 > 세부 대표유형명] 4단계로 세부 출제 유형을 밝히고, 인식한 조건이나 각도를 "
+                    "먼저 확인한 뒤 2단계 힌트 질문을 던져라."
+                )
+                spinner_text = "문제를 꼼꼼하게 살피는 중입니다..."
+                log_label = "문제 사진 업로드 제출"
+
             content_blocks = [
                 {
                     "type": "image",
@@ -2247,35 +2354,33 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
             ]
             images_submitted = [{"bytes": p_bytes, "mime": uploaded_problem.type}]
             label = "📷 문제 사진을 올렸어요!"
-            spinner_text = "문제를 꼼꼼하게 살피는 중입니다..."
-            log_label = "문제 사진 업로드 제출"
 
-        with st.spinner(spinner_text):
-            try:
-                response = client.messages.create(
-                    model=MODEL_NAME,
-                    max_tokens=2000,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": content_blocks}],
-                )
-                bot_reply = get_response_text(response)
-                # 사진 제출 자체도 대화 기록에 남겨서 새로고침 후에도 사진 내역이 보이게 한다.
-                st.session_state[messages_key].append({
-                    "role": "user",
-                    "content": label,
-                    "images": images_submitted,
-                    "api_text": api_text,
-                })
-                st.session_state[messages_key].append({"role": "assistant", "content": bot_reply})
-                log_to_slack_and_gsheet(
-                    st.session_state.student_name, st.session_state.student_grade, mode, log_label, bot_reply,
-                    skip_telegram=True,
-                )
-                upsert_question_archive_entry(state_prefix, feature_label, messages_key)
-                persist_current_student()
-                st.rerun()
-            except Exception as e:
-                show_friendly_error(e)
+            with st.spinner(spinner_text):
+                try:
+                    response = client.messages.create(
+                        model=MODEL_NAME,
+                        max_tokens=2000,
+                        system=system_prompt,
+                        messages=[{"role": "user", "content": content_blocks}],
+                    )
+                    bot_reply = get_response_text(response)
+                    # 사진 제출 자체도 대화 기록에 남겨서 새로고침 후에도 사진 내역이 보이게 한다.
+                    st.session_state[messages_key].append({
+                        "role": "user",
+                        "content": label,
+                        "images": images_submitted,
+                        "api_text": api_text,
+                    })
+                    st.session_state[messages_key].append({"role": "assistant", "content": bot_reply})
+                    log_to_slack_and_gsheet(
+                        st.session_state.student_name, st.session_state.student_grade, mode, log_label, bot_reply,
+                        skip_telegram=True,
+                    )
+                    upsert_question_archive_entry(state_prefix, feature_label, messages_key)
+                    persist_current_student()
+                    st.rerun()
+                except Exception as e:
+                    show_friendly_error(e)
 
     # ==========================================
     # 대화 기록: 접속할 때마다 백지로 시작한다 (콴다처럼) - 지난 질문은 여기 안 쌓이고
