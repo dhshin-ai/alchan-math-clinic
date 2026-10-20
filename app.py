@@ -86,6 +86,11 @@ try:
 except ImportError:
     qrcode = None
 
+try:
+    from streamlit_cropper import st_cropper
+except ImportError:
+    st_cropper = None
+
 
 @st.cache_resource
 def get_supabase_client():
@@ -2256,6 +2261,59 @@ def transcribe_handwriting(image_bytes, media_type):
     return get_response_text(response)
 
 
+OCR_SANITY_CHECK_SYSTEM_PROMPT = (
+    "너는 수학 수식 교정 전문가다. Mathpix OCR로 인식된 수식(LaTeX)과 문제 그림을 대조하여 오독된 "
+    "기호나 숫자를 교정하라.\n"
+    "- 직사각형/원 접선 그림에서 CE=3, FE=x 로 표시되어 있다면, 빗변 CF는 x+3 이어야 한다.\n"
+    "- 만약 OCR 결과에 (x+4)^2 처럼 주변 숫자 '4'의 간섭으로 3이 4로 잘못 인식된 패턴이 보인다면, "
+    "기하학적 참값인 (x+3)^2 으로 즉각 정정하라.\n"
+    "- 문제 그림에 나온 조건(길이, 각도 등)과 명백히 모순되는 숫자/기호만 교정하고, 확신이 없는 "
+    "부분은 원문 그대로 둬라.\n"
+    "- 오독 교정된 최종 LaTeX 텍스트만 출력하라. 그 외 설명이나 머리말을 절대 덧붙이지 마라."
+)
+
+
+def sanity_check_ocr_text(transcribed_text, problem_image_bytes, problem_media_type):
+    """2단계 검증 전 '기하 맥락 기반 OCR 사후 교정' - Mathpix/Vision이 전사한 텍스트를 문제
+    사진(도형 조건 등)과 대조해 숫자/기호 오독을 1회 바로잡는다.
+
+    이 단계는 보정 보너스일 뿐이다 - 실패하면 교정 없이 원문을 그대로 돌려줘서, 이 호출 하나가
+    실패했다고 핵심 파이프라인(전사 → Quick-Edit → 검증) 전체가 막히면 안 된다.
+    """
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model=MODEL_NAME,
+            max_tokens=1200,
+            system=OCR_SANITY_CHECK_SYSTEM_PROMPT,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": problem_media_type,
+                            "data": base64.b64encode(problem_image_bytes).decode("utf-8"),
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            "다음은 OCR로 인식된 손글씨 풀이(줄별 LaTeX)다:\n\n"
+                            f"{transcribed_text}\n\n"
+                            "위 문제 그림과 대조해서 오독된 숫자/기호가 있다면 교정한 최종 LaTeX 텍스트만 출력해줘."
+                        ),
+                    },
+                ],
+            }],
+        )
+        corrected = get_response_text(response)
+        return corrected or transcribed_text
+    except Exception:
+        return transcribed_text
+
+
 def _extract_latex_lines(transcribed_text):
     """전사 결과 문자열에서 줄마다 LaTeX 알짹이만 뽑아 st.latex 렌더링용 리스트로 돌려준다.
 
@@ -2337,6 +2395,53 @@ def parse_handwriting_diagnosis(raw_text):
     return diagnosis, hint, parsed_ok
 
 
+def run_handwriting_ocr_stage(
+    solution_bytes, problem_bytes, problem_media_type, images_submitted, label, api_text, draft_key,
+):
+    """1단계(전사) + 기하 맥락 사후 교정을 수행하고, 결과를 Quick-Edit 화면용 draft_key에
+    스테이시한다 - 2단계(검증)는 학생이 Quick-Edit에서 확인/수정 후 확정해야 진행된다.
+
+    전사(Mathpix 우선 → Vision LLM 폴백) 자체가 실패하면(예외) 화면에 에러만 띄우고
+    draft를 만들지 않는다 - 호출한 쪽(크롭 화면 또는 업로드 직후)이 그대로 유지된다.
+    """
+    try:
+        with st.spinner("전문 수식 엔진이 손글씨를 LaTeX로 판독 중입니다..."):
+            preprocessed_bytes = preprocess_handwriting_photo(solution_bytes)
+            mathpix_ok, mathpix_result, mathpix_err = recognize_handwriting_latex(preprocessed_bytes)
+
+        # Mathpix 호출 결과는 성공/실패 어느 쪽이든 조용히 넘기지 않고 뱃지로 띄운다
+        # (디버깅 목적 - 왜 Vision LLM 폴백으로 넘어갔는지 바로 보여야 한다).
+        if mathpix_ok:
+            confidence = mathpix_result.get("confidence")
+            confidence_label = (
+                f" (신뢰도: {round(confidence * 100)}%)" if isinstance(confidence, (int, float)) else ""
+            )
+            ocr_badge = ("success", f"✅ Mathpix 수식 엔진 작동 완료{confidence_label}")
+            raw_transcribed = mathpix_result.get("text") or "\n".join(mathpix_result.get("latex_items", []))
+        else:
+            ocr_badge = ("error", f"❌ Mathpix 호출 실패: {mathpix_err}")
+            raw_transcribed = transcribe_handwriting(preprocessed_bytes, "image/jpeg")
+
+        # 기하 맥락 기반 OCR 사후 교정(Sanity Check) - 문제 그림과 대조해 숫자/기호
+        # 오독(예: 3→4)을 2단계 검증으로 넘어가기 전에 한 번 바로잡는다.
+        with st.spinner("기하 맥락으로 숫자/기호 오독을 교정하는 중입니다..."):
+            sanity_checked = sanity_check_ocr_text(raw_transcribed, problem_bytes, problem_media_type)
+
+        st.session_state[draft_key] = {
+            "images_submitted": images_submitted,
+            "label": label,
+            "api_text": api_text,
+            "original_text": raw_transcribed,
+            "edited_text": sanity_checked,
+            "ocr_badge": ocr_badge,
+            "sanity_corrected": sanity_checked.strip() != raw_transcribed.strip(),
+            "solution_image_bytes": solution_bytes,
+        }
+        st.rerun()
+    except Exception as e:
+        show_friendly_error(e)
+
+
 def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_uploader, caption_text):
     """'❓ 질문 클리닉'과 '🔍 오답 첨삭' 탭이 공유하는 렌더러.
 
@@ -2408,9 +2513,10 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
     sol_id = uploaded_solution.file_id if uploaded_solution else "none"
     curr_upload_key = f"{prob_id}_{sol_id}"
 
-    # 손글씨 OCR 결과를 바로 채점에 넘기지 않고, 학생이 확인/수정(Quick-Edit)한 뒤
-    # 확정할 때까지 담아두는 임시 상태 - with_solution_uploader(오답 첨삭) + dual
-    # 모드에서만 쓰인다.
+    # 손글씨 OCR 파이프라인의 임시 상태 - with_solution_uploader(오답 첨삭) + dual 모드에서만
+    # 쓰인다. crop_key: 전사 전 수식 영역을 크롭할 때까지 대기 / draft_key: 전사 결과를
+    # Quick-Edit으로 확인/수정한 뒤 확정할 때까지 대기.
+    crop_key = f"{state_prefix}_crop_pending"
     draft_key = f"{state_prefix}_ocr_draft"
     ocr_edit_widget_key = f"{state_prefix}_ocr_edit_area"
 
@@ -2419,7 +2525,9 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
         st.session_state[messages_key] = []
         # 새 사진 = 새 질문 → 오답노트에도 새 카드를 만든다 (이전 카드를 계속 수정하지 않도록 끊어준다).
         st.session_state[f"{state_prefix}_archive_entry_id"] = None
-        # 이전 사진의 Quick-Edit draft/위젯 값이 새 사진에 그대로 남아 보이지 않도록 지운다.
+        # 이전 사진의 크롭 대기/Quick-Edit draft/위젯 값이 새 사진에 그대로 남아 보이지
+        # 않도록 지운다.
+        st.session_state.pop(crop_key, None)
         st.session_state.pop(draft_key, None)
         st.session_state.pop(ocr_edit_widget_key, None)
 
@@ -2444,38 +2552,23 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                 "다정하게 지적해줘."
             )
 
-            # 1단계(전사)만 여기서 끝낸다 - 2단계(검증)는 학생이 Quick-Edit 화면에서
-            # OCR 결과를 확인/수정하고 확정 버튼을 눌러야 진행된다 (아래 elif 블록).
-            try:
-                with st.spinner("전문 수식 엔진이 손글씨를 LaTeX로 판독 중입니다..."):
-                    preprocessed_bytes = preprocess_handwriting_photo(s_bytes)
-                    mathpix_ok, mathpix_result, mathpix_err = recognize_handwriting_latex(preprocessed_bytes)
-
-                # Mathpix 호출 결과는 성공/실패 어느 쪽이든 조용히 넘기지 않고 뱃지로 띄운다
-                # (디버깅 목적 - 왜 Vision LLM 폴백으로 넘어갔는지 바로 보여야 한다).
-                if mathpix_ok:
-                    confidence = mathpix_result.get("confidence")
-                    confidence_label = (
-                        f" (신뢰도: {round(confidence * 100)}%)" if isinstance(confidence, (int, float)) else ""
-                    )
-                    ocr_badge = ("success", f"✅ Mathpix 수식 엔진 작동 완료{confidence_label}")
-                    transcribed = mathpix_result.get("text") or "\n".join(mathpix_result.get("latex_items", []))
-                else:
-                    ocr_badge = ("error", f"❌ Mathpix 호출 실패: {mathpix_err}")
-                    transcribed = transcribe_handwriting(preprocessed_bytes, "image/jpeg")
-
-                st.session_state[draft_key] = {
+            if st_cropper is not None:
+                # 수식 포커스 크롭이 가능하면 전사(Mathpix)로 바로 넘기지 않고, 학생이
+                # 작은 손글씨 영역만 정확히 잘라낼 기회를 먼저 준다 (아래 crop_key elif 블록).
+                st.session_state[crop_key] = {
+                    "problem_bytes": p_bytes,
+                    "problem_media_type": uploaded_problem.type,
+                    "solution_bytes": s_bytes,
                     "images_submitted": images_submitted,
                     "label": label,
                     "api_text": api_text,
-                    "original_text": transcribed,
-                    "edited_text": transcribed,
-                    "ocr_badge": ocr_badge,
-                    "solution_image_bytes": s_bytes,
                 }
                 st.rerun()
-            except Exception as e:
-                show_friendly_error(e)
+            else:
+                # streamlit-cropper가 설치되지 않은 환경 - 크롭 단계 없이 원본 그대로 전사한다.
+                run_handwriting_ocr_stage(
+                    s_bytes, p_bytes, uploaded_problem.type, images_submitted, label, api_text, draft_key,
+                )
         else:
             client = anthropic.Anthropic(api_key=api_key)
 
@@ -2539,6 +2632,48 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                 except Exception as e:
                     show_friendly_error(e)
 
+    elif st.session_state.get(crop_key):
+        # ==========================================
+        # ✂️ 수식 포커스 크롭: 전체 사진 안의 작은 손글씨 숫자(예: 3↔4)가 해상도 손실로
+        # 오독되는 문제를 줄이기 위해, 전사 전에 수식 영역만 네모 박스로 잘라내게 한다.
+        # ==========================================
+        pending = st.session_state[crop_key]
+        st.markdown("✂️ **손글씨 수식 영역만 네모 박스로 잘라주세요** (작게 쓴 숫자/기호일수록 더 정확하게 읽혀요!)")
+        source_img = Image.open(io.BytesIO(pending["solution_bytes"]))
+        source_img = ImageOps.exif_transpose(source_img)
+        cropped_img = st_cropper(
+            source_img,
+            realtime_update=True,
+            box_color="#3A449A",
+            return_type="image",
+            key=f"{state_prefix}_cropper",
+        )
+        st.image(cropped_img, caption="🔍 이 영역으로 판독할게요", width=320)
+
+        crop_c1, crop_c2 = st.columns(2)
+        with crop_c1:
+            if st.button(
+                "✅ 이 영역으로 판독 시작", use_container_width=True, type="primary",
+                key=f"{state_prefix}_crop_confirm_btn",
+            ):
+                crop_buf = io.BytesIO()
+                cropped_img.convert("RGB").save(crop_buf, format="JPEG", quality=95)
+                st.session_state.pop(crop_key, None)
+                run_handwriting_ocr_stage(
+                    crop_buf.getvalue(), pending["problem_bytes"], pending["problem_media_type"],
+                    pending["images_submitted"], pending["label"], pending["api_text"], draft_key,
+                )
+        with crop_c2:
+            if st.button(
+                "⏭️ 자르지 않고 전체 사진 그대로", use_container_width=True,
+                key=f"{state_prefix}_crop_skip_btn",
+            ):
+                st.session_state.pop(crop_key, None)
+                run_handwriting_ocr_stage(
+                    pending["solution_bytes"], pending["problem_bytes"], pending["problem_media_type"],
+                    pending["images_submitted"], pending["label"], pending["api_text"], draft_key,
+                )
+
     elif st.session_state.get(draft_key):
         # ==========================================
         # 📝 수식 확인 및 원터치 수정(Quick-Edit): OCR이 끝났지만 아직 검증(2단계)
@@ -2552,6 +2687,8 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
         else:
             st.error(badge_text)
             st.caption("🤖 Vision AI로 대체 판독한 결과예요.")
+        if draft.get("sanity_corrected"):
+            st.info("🔧 문제 그림과 대조해서 오독된 숫자/기호를 자동으로 한 번 교정했어요.")
 
         st.markdown("**AI가 내 풀이를 이렇게 읽었어요! 잘못 읽힌 글자가 있다면 직접 수정한 뒤 첨삭을 시작하세요.**")
         edited_text = st.text_area(
