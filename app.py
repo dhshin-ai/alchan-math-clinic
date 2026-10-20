@@ -508,6 +508,47 @@ def insert_pass_record(topic, concept_summary):
         pass
 
 
+OCR_CORRECTION_BUCKET = "ocr-corrections"
+
+
+def log_ocr_correction(original_text, edited_text, image_bytes, kakao_id):
+    """학생이 'Quick-Edit' 화면에서 OCR 판독 결과를 실제로 고쳤을 때만 호출한다 -
+    original_ocr_text/user_edited_text를 나란히 ocr_corrections 테이블에 남겨서
+    추후 자체 수식 OCR 모델을 학습시킬 데이터셋으로 쓴다.
+
+    이미지는 Supabase Storage 버킷(OCR_CORRECTION_BUCKET)에 올려 공개 URL을 같이
+    저장한다 - 버킷이 아직 없으면 한 번 만들어보고, 그래도 업로드가 안 되면
+    image_url을 빈 문자열로 둔 채 텍스트 비교만이라도 남긴다. ocr_corrections
+    테이블 자체가 아직 없는 환경(42P01)이어도 이 로깅 실패가 첨삭 기능을 막으면
+    안 되므로 예외를 전부 조용히 삼킨다.
+    """
+    if not (supabase and kakao_id):
+        return
+    image_url = ""
+    try:
+        try:
+            supabase.storage.create_bucket(OCR_CORRECTION_BUCKET, options={"public": True})
+        except Exception:
+            pass  # 이미 존재하거나 권한이 없으면 업로드 시도에서 자연히 드러난다
+        path = f"{kakao_id}/{uuid.uuid4()}.jpg"
+        supabase.storage.from_(OCR_CORRECTION_BUCKET).upload(
+            path, image_bytes, file_options={"content-type": "image/jpeg"}
+        )
+        image_url = supabase.storage.from_(OCR_CORRECTION_BUCKET).get_public_url(path)
+    except Exception:
+        image_url = ""
+
+    try:
+        supabase.table("ocr_corrections").insert({
+            "kakao_id": kakao_id,
+            "original_ocr_text": original_text,
+            "user_edited_text": edited_text,
+            "image_url": image_url,
+        }).execute()
+    except Exception:
+        pass
+
+
 def _embedded_user(row):
     """PostgREST 조인(embed)으로 함께 온 users 중첩 객체를 꺼낸다.
 
@@ -2335,11 +2376,20 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
     sol_id = uploaded_solution.file_id if uploaded_solution else "none"
     curr_upload_key = f"{prob_id}_{sol_id}"
 
+    # 손글씨 OCR 결과를 바로 채점에 넘기지 않고, 학생이 확인/수정(Quick-Edit)한 뒤
+    # 확정할 때까지 담아두는 임시 상태 - with_solution_uploader(오답 첨삭) + dual
+    # 모드에서만 쓰인다.
+    draft_key = f"{state_prefix}_ocr_draft"
+    ocr_edit_widget_key = f"{state_prefix}_ocr_edit_area"
+
     if api_key and uploaded_problem and curr_upload_key != st.session_state.get(upload_key_key):
         st.session_state[upload_key_key] = curr_upload_key
         st.session_state[messages_key] = []
         # 새 사진 = 새 질문 → 오답노트에도 새 카드를 만든다 (이전 카드를 계속 수정하지 않도록 끊어준다).
         st.session_state[f"{state_prefix}_archive_entry_id"] = None
+        # 이전 사진의 Quick-Edit draft/위젯 값이 새 사진에 그대로 남아 보이지 않도록 지운다.
+        st.session_state.pop(draft_key, None)
+        st.session_state.pop(ocr_edit_widget_key, None)
 
         p_bytes = uploaded_problem.getvalue()
 
@@ -2362,68 +2412,35 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                 "다정하게 지적해줘."
             )
 
+            # 1단계(전사)만 여기서 끝낸다 - 2단계(검증)는 학생이 Quick-Edit 화면에서
+            # OCR 결과를 확인/수정하고 확정 버튼을 눌러야 진행된다 (아래 elif 블록).
             try:
                 with st.spinner("전문 수식 엔진이 손글씨를 LaTeX로 판독 중입니다..."):
                     preprocessed_bytes = preprocess_handwriting_photo(s_bytes)
                     mathpix_ok, mathpix_result, mathpix_err = recognize_handwriting_latex(preprocessed_bytes)
 
-                # Mathpix 호출 결과는 성공/실패 어느 쪽이든 조용히 넘기지 않고 화면에 바로 뱃지로 띄운다
-                # (디버깅 목적 - 어느 단계에서 왜 Vision LLM 폴백으로 넘어갔는지 바로 보여야 한다).
+                # Mathpix 호출 결과는 성공/실패 어느 쪽이든 조용히 넘기지 않고 뱃지로 띄운다
+                # (디버깅 목적 - 왜 Vision LLM 폴백으로 넘어갔는지 바로 보여야 한다).
                 if mathpix_ok:
                     confidence = mathpix_result.get("confidence")
                     confidence_label = (
                         f" (신뢰도: {round(confidence * 100)}%)" if isinstance(confidence, (int, float)) else ""
                     )
-                    st.success(f"✅ Mathpix 수식 엔진 작동 완료{confidence_label}")
+                    ocr_badge = ("success", f"✅ Mathpix 수식 엔진 작동 완료{confidence_label}")
                     transcribed = mathpix_result.get("text") or "\n".join(mathpix_result.get("latex_items", []))
-                    st.markdown("📝 **Mathpix가 판독한 원문**")
-                    st.code(transcribed or "(빈 응답)")
                 else:
-                    st.error(f"❌ Mathpix 호출 실패: {mathpix_err}")
-                    st.caption("🤖 Vision AI로 대체 판독을 진행할게요.")
+                    ocr_badge = ("error", f"❌ Mathpix 호출 실패: {mathpix_err}")
                     transcribed = transcribe_handwriting(preprocessed_bytes, "image/jpeg")
 
-                st.markdown("📝 **판독된 풀이 과정**")
-                latex_lines = _extract_latex_lines(transcribed)
-                if latex_lines:
-                    for latex_line in latex_lines:
-                        st.latex(latex_line)
-                else:
-                    st.markdown(transcribed or "(인식된 내용이 없어요)")
-
-                with st.spinner("다혜T의 풀이 첨삭 및 힌트를 분석 중입니다..."):
-                    raw_diagnosis = verify_transcribed_solution(transcribed, st.session_state.student_grade)
-                diagnosis, hint, parsed_ok = parse_handwriting_diagnosis(raw_diagnosis)
-
-                if not parsed_ok:
-                    st.warning("⚠️ 정해진 형식을 찾지 못해 AI 원문을 그대로 보여드려요.")
-                    st.markdown(diagnosis or "(빈 응답)")
-                else:
-                    st.markdown(f"🔍 **진단 결과:** {diagnosis}")
-                    if hint:
-                        st.markdown(f"💡 **다혜T의 역질문 힌트:** {hint}")
-
-                bot_reply = f"📝 **판독된 풀이 과정**\n\n{transcribed}\n\n---\n\n"
-                if not parsed_ok:
-                    bot_reply += diagnosis or "(빈 응답)"
-                else:
-                    bot_reply += f"🔍 **진단 결과:** {diagnosis}"
-                    if hint:
-                        bot_reply += f"\n\n💡 **다혜T의 역질문 힌트:** {hint}"
-                # 사진 제출 자체도 대화 기록에 남겨서 새로고침 후에도 사진 내역이 보이게 한다.
-                st.session_state[messages_key].append({
-                    "role": "user",
-                    "content": label,
-                    "images": images_submitted,
+                st.session_state[draft_key] = {
+                    "images_submitted": images_submitted,
+                    "label": label,
                     "api_text": api_text,
-                })
-                st.session_state[messages_key].append({"role": "assistant", "content": bot_reply})
-                log_to_slack_and_gsheet(
-                    st.session_state.student_name, st.session_state.student_grade, mode, "풀이 검토 사진 제출", bot_reply,
-                    skip_telegram=True,
-                )
-                upsert_question_archive_entry(state_prefix, feature_label, messages_key)
-                persist_current_student()
+                    "original_text": transcribed,
+                    "edited_text": transcribed,
+                    "ocr_badge": ocr_badge,
+                    "solution_image_bytes": s_bytes,
+                }
                 st.rerun()
             except Exception as e:
                 show_friendly_error(e)
@@ -2489,6 +2506,83 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                     st.rerun()
                 except Exception as e:
                     show_friendly_error(e)
+
+    elif st.session_state.get(draft_key):
+        # ==========================================
+        # 📝 수식 확인 및 원터치 수정(Quick-Edit): OCR이 끝났지만 아직 검증(2단계)
+        # 전이다 - 3을 4로 오독하는 등의 OCR 실수가 그대로 검증 단계까지 흘러가면
+        # 틀린 진단이 나오므로, 학생이 여기서 한 번 확인/수정하고 넘어가야 한다.
+        # ==========================================
+        draft = st.session_state[draft_key]
+        badge_kind, badge_text = draft["ocr_badge"]
+        if badge_kind == "success":
+            st.success(badge_text)
+        else:
+            st.error(badge_text)
+            st.caption("🤖 Vision AI로 대체 판독한 결과예요.")
+
+        st.markdown("**AI가 내 풀이를 이렇게 읽었어요! 잘못 읽힌 글자가 있다면 직접 수정한 뒤 첨삭을 시작하세요.**")
+        edited_text = st.text_area(
+            "📝 판독된 풀이 (수정 가능)",
+            value=draft["edited_text"],
+            key=ocr_edit_widget_key,
+            height=200,
+        )
+        draft["edited_text"] = edited_text
+
+        st.markdown("🔎 **실시간 미리보기**")
+        preview_lines = _extract_latex_lines(edited_text)
+        if preview_lines:
+            for preview_line in preview_lines:
+                st.latex(preview_line)
+        else:
+            st.caption("(미리볼 수식이 없어요 - 위 텍스트를 LaTeX 형식으로 적어주세요)")
+
+        if st.button(
+            "✨ 이 수식으로 다혜T 첨삭 시작",
+            use_container_width=True,
+            type="primary",
+            key=f"{state_prefix}_ocr_confirm_btn",
+        ):
+            try:
+                with st.spinner("다혜T의 풀이 첨삭 및 힌트를 분석 중입니다..."):
+                    raw_diagnosis = verify_transcribed_solution(edited_text, st.session_state.student_grade)
+                diagnosis, hint, parsed_ok = parse_handwriting_diagnosis(raw_diagnosis)
+
+                bot_reply = f"📝 **판독된 풀이 과정**\n\n{edited_text}\n\n---\n\n"
+                if not parsed_ok:
+                    bot_reply += diagnosis or "(빈 응답)"
+                else:
+                    bot_reply += f"🔍 **진단 결과:** {diagnosis}"
+                    if hint:
+                        bot_reply += f"\n\n💡 **다혜T의 역질문 힌트:** {hint}"
+
+                st.session_state[messages_key].append({
+                    "role": "user",
+                    "content": draft["label"],
+                    "images": draft["images_submitted"],
+                    "api_text": draft["api_text"],
+                })
+                st.session_state[messages_key].append({"role": "assistant", "content": bot_reply})
+                log_to_slack_and_gsheet(
+                    st.session_state.student_name, st.session_state.student_grade, mode, "풀이 검토 사진 제출", bot_reply,
+                    skip_telegram=True,
+                )
+                upsert_question_archive_entry(state_prefix, feature_label, messages_key)
+
+                # 학생이 OCR 원문을 실제로 고쳤을 때만 학습 데이터로 남긴다.
+                if edited_text.strip() != draft["original_text"].strip():
+                    log_ocr_correction(
+                        draft["original_text"], edited_text, draft["solution_image_bytes"],
+                        st.session_state.get("kakao_id"),
+                    )
+
+                persist_current_student()
+                st.session_state.pop(draft_key, None)
+                st.session_state.pop(ocr_edit_widget_key, None)
+                st.rerun()
+            except Exception as e:
+                show_friendly_error(e)
 
     # ==========================================
     # 대화 기록: 접속할 때마다 백지로 시작한다 (콴다처럼) - 지난 질문은 여기 안 쌓이고

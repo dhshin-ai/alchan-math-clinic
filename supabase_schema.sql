@@ -1,7 +1,7 @@
 -- ============================================================
 -- 알찬학원 신다혜 쌤의 수학 클리닉 - Supabase 스키마
 -- Supabase 대시보드 > SQL Editor 에서 이 파일 내용을 그대로 붙여넣고 실행하세요.
--- (앱 코드는 이 4개 테이블 이름/컬럼명을 그대로 참조하므로 이름을 바꾸면 안 됩니다.)
+-- (앱 코드는 이 5개 테이블 이름/컬럼명을 그대로 참조하므로 이름을 바꾸면 안 됩니다.)
 -- ============================================================
 
 -- gen_random_uuid()에 필요 (Supabase 신규 프로젝트는 기본 활성화되어 있지만, 혹시 몰라 명시)
@@ -61,6 +61,26 @@ create table if not exists daily_missions (
     created_at   timestamptz not null default now()
 );
 
+-- 5) ocr_corrections: '🔍 첨삭' 손글씨 풀이 OCR에서 Mathpix/Vision이 처음 읽은 텍스트와
+--    학생이 'Quick-Edit' 화면에서 실제로 고친 최종 텍스트를 나란히 남긴다 - 추후 자체
+--    수식 OCR 모델을 학습시킬 데이터셋으로 쓰기 위함(app.py의 log_ocr_correction() 참고).
+--    학생이 판독 결과를 실제로 수정했을 때만 한 행이 쌓인다(그대로 확정하면 로그하지 않음).
+--    image_url은 Storage 버킷 'ocr-corrections'(public)에 올린 풀이 사진의 공개 URL이다 -
+--    이 테이블이 아직 없거나 버킷/업로드 권한이 없어도 첨삭 기능 자체는 조용히 정상
+--    동작한다(로깅 실패를 삼키도록 방어돼 있음). 이 로그를 실제로 쌓으려면 이 테이블을
+--    만들고, Storage에서 'ocr-corrections' 버킷을 Public으로 한 번 만들어 둬야 한다
+--    (대시보드 > Storage > New bucket, 또는 service_role 키가 버킷 생성 권한이 있으면
+--    앱이 첫 로깅 시도에서 자동으로 만든다).
+create table if not exists ocr_corrections (
+    id                 uuid primary key default gen_random_uuid(),
+    kakao_id           text references users(kakao_id) on delete cascade,
+    original_ocr_text  text not null default '',
+    user_edited_text   text not null default '',
+    image_url          text,
+    created_at         timestamptz not null default now()
+);
+create index if not exists ocr_corrections_kakao_id_idx on ocr_corrections (kakao_id);
+
 -- ------------------------------------------------------------
 -- (권장) Row Level Security 활성화
 -- 이 앱은 Streamlit 서버에서 SUPABASE_SERVICE_KEY(= service_role 키)로만 접근하고,
@@ -73,3 +93,4 @@ alter table users          enable row level security;
 alter table chat_history   enable row level security;
 alter table pass_records   enable row level security;
 alter table daily_missions enable row level security;
+alter table ocr_corrections enable row level security;
