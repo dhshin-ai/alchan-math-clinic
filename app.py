@@ -1944,6 +1944,8 @@ if "clinic_archive_entry_id" not in st.session_state:
     st.session_state.clinic_archive_entry_id = None
 if "review_archive_entry_id" not in st.session_state:
     st.session_state.review_archive_entry_id = None
+if "upload_mode" not in st.session_state:
+    st.session_state.upload_mode = None
 if "question_archive" not in st.session_state:
     st.session_state.question_archive = []
 if "pass_topic" not in st.session_state:
@@ -2027,7 +2029,7 @@ with st.sidebar:
                 "clinic_archive_entry_id", "review_archive_entry_id", "question_archive",
                 "slack_thread_ts", "pass_topic", "pass_messages", "pass_completed", "pass_failed",
                 "pass_records", "pass_concept_summary", "pass_completed_date", "pass_completed_time",
-                "pass_card_bytes", "pass_grade", "pass_fail_archive_entry_id",
+                "pass_card_bytes", "pass_grade", "pass_fail_archive_entry_id", "upload_mode",
             ]:
                 st.session_state.pop(key, None)
             st.rerun()
@@ -2239,17 +2241,46 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
     system_prompt = load_system_prompt(st.session_state.student_grade)
 
     uploaded_solution = None
+    uploaded_problem = None
     if with_solution_uploader:
-        st.caption("💡 tip: 연필선이 선명할수록, 그림자가 지지 않게 수직으로 찍을수록 AI가 더 정확하게 읽어요!")
-        up_c1, up_c2 = st.columns(2)
-        with up_c1:
-            uploaded_problem = st.file_uploader(
-                "1️⃣ 문제 사진 (또는 문제+풀이 사진)", type=["jpg", "jpeg", "png"], key=f"{state_prefix}_prob"
-            )
-        with up_c2:
-            uploaded_solution = st.file_uploader(
-                "2️⃣ 연습장 풀이 사진 (선택)", type=["jpg", "jpeg", "png"], key=f"{state_prefix}_sol"
-            )
+        if st.session_state.upload_mode is None:
+            # View A: 방식 선택 화면 - 모바일 앱처럼 큰 버튼 2개 중 하나를 고르게 한다.
+            st.markdown("##### 어떻게 풀었나요? 방식을 선택해 주세요👇")
+            mode_c1, mode_c2 = st.columns(2)
+            with mode_c1:
+                if st.button(
+                    "📖 문제집에 바로 풀었어요", use_container_width=True, key=f"{state_prefix}_mode_single_btn"
+                ):
+                    st.session_state.upload_mode = "single"
+                    st.rerun()
+            with mode_c2:
+                if st.button(
+                    "📝 연습장에 따로 풀었어요", use_container_width=True, key=f"{state_prefix}_mode_dual_btn"
+                ):
+                    st.session_state.upload_mode = "dual"
+                    st.rerun()
+        else:
+            # View B: 선택한 방식에 맞는 업로드 화면.
+            if st.button("🔙 다른 방식으로 선택하기", key=f"{state_prefix}_mode_back_btn"):
+                st.session_state.upload_mode = None
+                st.rerun()
+
+            st.caption("💡 tip: 연필선이 선명할수록, 그림자가 지지 않게 수직으로 찍을수록 AI가 더 정확하게 읽어요!")
+
+            if st.session_state.upload_mode == "dual":
+                up_c1, up_c2 = st.columns(2)
+                with up_c1:
+                    uploaded_problem = st.file_uploader(
+                        "1️⃣ 문제 사진", type=["jpg", "jpeg", "png"], key=f"{state_prefix}_prob"
+                    )
+                with up_c2:
+                    uploaded_solution = st.file_uploader(
+                        "2️⃣ 연습장 풀이 사진", type=["jpg", "jpeg", "png"], key=f"{state_prefix}_sol"
+                    )
+            else:
+                uploaded_problem = st.file_uploader(
+                    "📷 문제집에 바로 풀어놓은 사진", type=["jpg", "jpeg", "png"], key=f"{state_prefix}_prob"
+                )
     else:
         uploaded_problem = st.file_uploader(
             "풀다가 막힌 문제 사진을 올려주세요!",
