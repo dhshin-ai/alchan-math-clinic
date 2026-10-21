@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import os
 import re
 import ast
@@ -11,6 +12,7 @@ from urllib.parse import quote
 import anthropic
 import streamlit as st
 from utils.math_ocr import recognize_handwriting_latex
+from utils.solution_db import save_problem_solution, get_problem_solution, list_registered_problems
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
@@ -591,6 +593,151 @@ def fetch_all_chat_history():
         return False, [], str(e)
 
 
+SOLUTION_CONVERTER_SYSTEM_PROMPT = (
+    "너는 수학 해설지를 정제하는 전문가다. 원장님이 붙여넣은 해설지 텍스트를 정확히 4단계의 "
+    "'정석 사고 단계'로 구조화하고, 학생들이 이 문제에서 자주 틀리는 함정(pitfalls)을 뽑아내라.\n"
+    "1단계: 핵심 성질 파악 (문제에서 주어진 조건으로부터 바로 도출되는 성질/정의)\n"
+    "2단계: 관계식 수립 (1단계를 바탕으로 세우는 방정식/부등식)\n"
+    "3단계: 식 전개/변형 (전개, 인수분해, 이항 등 대수적 변형 과정)\n"
+    "4단계: 계산 도출 (동류항 정리 등 최종 계산과 답)\n\n"
+    "반드시 아래 JSON 형식으로만 출력하라 (다른 설명, 머리말, 코드블록 표시 없이 JSON 그 자체만):\n"
+    "{\n"
+    '  "reference_steps": [\n'
+    '    {"step": 1, "title": "핵심 성질 파악", "content": "..."},\n'
+    '    {"step": 2, "title": "관계식 수립", "content": "..."},\n'
+    '    {"step": 3, "title": "식 전개/변형", "content": "..."},\n'
+    '    {"step": 4, "title": "계산 도출", "content": "..."}\n'
+    "  ],\n"
+    '  "pitfalls": ["...", "..."]\n'
+    "}"
+)
+
+
+def convert_solution_to_reference_steps(raw_solution_text):
+    """원장님이 '📚 해설 DB 관리'에 붙여넣은 해설지 텍스트를 4단계 정석 사고 단계 + 자주 틀리는
+    함정(JSON)으로 정제한다.
+
+    모델이 ```json 코드블록으로 감싸서 답하는 경우까지 방어적으로 벗겨내고 파싱한다. 파싱
+    실패 시 예외를 그대로 올려서, 호출하는 쪽(관리자 페이지)이 에러 메시지를 보여주고
+    원장님이 다시 시도하게 한다 - 이 단계는 사람이 검토/수정하는 초안 생성이라, 조용히
+    기본값으로 넘어가면 오히려 잘못된 해설이 그대로 저장될 위험이 있다.
+    """
+    client = anthropic.Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model=MODEL_NAME,
+        max_tokens=1500,
+        system=SOLUTION_CONVERTER_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": f"다음 해설지를 정제해줘:\n\n{raw_solution_text}"}],
+    )
+    raw = get_response_text(response).strip()
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
+    return json.loads(cleaned)
+
+
+def render_solution_db_admin_section():
+    """원장님용 '📚 해설 DB 관리' - 교과과정 표준 해설을 등록/수정하고 현황을 확인한다.
+
+    등록된 해설은 손글씨 풀이 첨삭의 2단계 검증에서 '바이블'로 쓰인다
+    (app.py의 get_problem_solution()/format_reference_solution() 참고).
+    """
+    st.markdown("#### 📚 해설 DB 관리")
+    st.caption(
+        "교과과정 표준 해설을 등록해두면, 손글씨 첨삭에서 학생 풀이를 이 해설과 "
+        "대조해 더 정밀하게 채점해요. 등록 안 된 문제는 기존 방식으로 자동 전환돼요."
+    )
+
+    info_c1, info_c2, info_c3 = st.columns(3)
+    with info_c1:
+        sdb_book_title = st.text_input("교재명", value="쎈 중3-2", key="sdb_book_title")
+    with info_c2:
+        sdb_problem_code = st.text_input("문제 번호", value="0353", key="sdb_problem_code")
+    with info_c3:
+        sdb_chapter_name = st.text_input("단원명", placeholder="예: 원과 직선", key="sdb_chapter_name")
+
+    raw_solution_text = st.text_area(
+        "해설지 텍스트 붙여넣기",
+        key="sdb_raw_solution_text",
+        height=140,
+        placeholder="해설지에서 복사한 텍스트를 그대로 붙여넣으세요.",
+    )
+
+    if st.button(
+        "✨ 정석 사고 단계로 자동 변환", key="sdb_convert_btn", disabled=not raw_solution_text.strip()
+    ):
+        if not api_key:
+            st.error("API 키가 설정되지 않았습니다.")
+        else:
+            with st.spinner("해설지를 정석 사고 단계로 정제하는 중입니다..."):
+                try:
+                    converted = convert_solution_to_reference_steps(raw_solution_text)
+                    st.session_state["_sdb_steps_pending"] = json.dumps(
+                        converted.get("reference_steps", []), ensure_ascii=False, indent=2
+                    )
+                    st.session_state["_sdb_pitfalls_pending"] = json.dumps(
+                        converted.get("pitfalls", []), ensure_ascii=False, indent=2
+                    )
+                    st.success("✅ 변환 완료! 아래 내용을 검토하고 필요하면 직접 수정해 주세요.")
+                    st.rerun()
+                except Exception as e:
+                    show_friendly_error(e, "😥 자동 변환 중 문제가 생겼어요. 원문을 다듬어 다시 시도해 주세요.")
+
+    # mission_text_input과 같은 이유로, 위젯이 이미 생성된 뒤에는 그 키의 session_state를
+    # 직접 바꿀 수 없다 - _sdb_*_pending에 적어두고 rerun하면 위젯 생성 '전'인 여기서 반영된다.
+    if "_sdb_steps_pending" in st.session_state:
+        st.session_state["sdb_steps_text"] = st.session_state.pop("_sdb_steps_pending")
+    if "_sdb_pitfalls_pending" in st.session_state:
+        st.session_state["sdb_pitfalls_text"] = st.session_state.pop("_sdb_pitfalls_pending")
+
+    steps_text = st.text_area(
+        "정석 사고 단계 (JSON, 검토/수정 가능)", key="sdb_steps_text", height=220,
+        placeholder='[{"step": 1, "title": "핵심 성질 파악", "content": "..."}, ...]',
+    )
+    pitfalls_text = st.text_area(
+        "자주 틀리는 함정 (JSON, 검토/수정 가능)", key="sdb_pitfalls_text", height=120,
+        placeholder='["...", "..."]',
+    )
+
+    if st.button("💾 DB에 정석 해설 등록", key="sdb_save_btn", type="primary", use_container_width=True):
+        if not sdb_book_title.strip() or not sdb_problem_code.strip():
+            st.warning("교재명과 문제 번호를 입력해 주세요.")
+        else:
+            try:
+                reference_steps = json.loads(steps_text) if steps_text.strip() else []
+                pitfalls = json.loads(pitfalls_text) if pitfalls_text.strip() else []
+            except Exception as e:
+                st.error(f"😥 JSON 형식이 올바르지 않아요: {e}")
+            else:
+                save_ok, save_err = save_problem_solution(
+                    sdb_book_title, sdb_problem_code, sdb_chapter_name, reference_steps, pitfalls
+                )
+                if save_ok:
+                    st.success(f"✅ {sdb_book_title} - {sdb_problem_code} 정석 해설을 등록했어요!")
+                    st.rerun()
+                else:
+                    st.error(f"😥 저장 중 문제가 생겼어요.\n\n상세 에러: {save_err}")
+
+    st.markdown("##### 📋 등록 현황")
+    registered = list_registered_problems()
+    if not registered:
+        st.info("아직 등록된 문제가 없어요.")
+    else:
+        st.dataframe(
+            [
+                {
+                    "교재명": row.get("book_title", "-"),
+                    "문제번호": row.get("problem_code", "-"),
+                    "단원명": row.get("chapter_name", "-"),
+                    "단계 수": len(row.get("reference_steps") or []),
+                    "함정 수": len(row.get("pitfalls") or []),
+                    "등록/수정": _iso_to_kst_label(row.get("updated_at") or row.get("created_at")),
+                }
+                for row in registered
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 def render_teacher_dashboard():
     """학생들에게는 보이지 않는, 비밀번호로만 들어오는 선생님 전용 대시보드.
 
@@ -826,6 +973,9 @@ def render_teacher_dashboard():
             use_container_width=True,
             hide_index=True,
         )
+
+    st.markdown("---")
+    render_solution_db_admin_section()
 
 
 def send_telegram_alert(msg_type, content_preview):
@@ -2394,6 +2544,30 @@ def verify_transcribed_solution(transcribed_text, student_grade, reference_solut
     return get_response_text(response)
 
 
+def format_reference_solution(problem_row):
+    """problem_solutions 테이블 행(reference_steps/pitfalls, jsonb)을 verify_transcribed_solution()의
+    reference_solution 문자열 형식(DEFAULT_REFERENCE_SOLUTION과 동일한 'N단계: 제목 (내용)' 줄글)으로
+    펼친다."""
+    lines = []
+    for step in (problem_row.get("reference_steps") or []):
+        if isinstance(step, dict):
+            step_no = step.get("step", "")
+            title = step.get("title", "")
+            content = step.get("content", "")
+            lines.append(f"{step_no}단계: {title} ({content})" if title else f"{step_no}단계: {content}")
+        else:
+            lines.append(str(step))
+
+    pitfalls = problem_row.get("pitfalls") or []
+    if pitfalls:
+        lines.append("")
+        lines.append("[자주 틀리는 함정]")
+        for pitfall in pitfalls:
+            lines.append(f"- {pitfall}")
+
+    return "\n".join(lines)
+
+
 def parse_handwriting_diagnosis(raw_text):
     """verify_transcribed_solution()의 'DIAGNOSIS: .../HINT: ...' 2줄 출력을 분리한다.
 
@@ -2416,6 +2590,7 @@ def parse_handwriting_diagnosis(raw_text):
 
 def run_handwriting_ocr_stage(
     solution_bytes, problem_bytes, problem_media_type, images_submitted, label, api_text, draft_key,
+    book_title="", problem_code="",
 ):
     """1단계(전사) + 기하 맥락 사후 교정을 수행하고, 결과를 Quick-Edit 화면용 draft_key에
     스테이시한다 - 2단계(검증)는 학생이 Quick-Edit에서 확인/수정 후 확정해야 진행된다.
@@ -2455,6 +2630,8 @@ def run_handwriting_ocr_stage(
             "ocr_badge": ocr_badge,
             "sanity_corrected": sanity_checked.strip() != raw_transcribed.strip(),
             "solution_image_bytes": solution_bytes,
+            "book_title": book_title,
+            "problem_code": problem_code,
         }
         st.rerun()
     except Exception as e:
@@ -2508,6 +2685,24 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
             st.caption("💡 tip: 연필선이 선명할수록, 그림자가 지지 않게 수직으로 찍을수록 AI가 더 정확하게 읽어요!")
 
             if st.session_state.upload_mode == "dual":
+                # 등록된 정석 해설 DB와 대조 검증을 하려면 어느 교재/몇 번 문제인지 알아야
+                # 한다 - 일치하는 문제가 없으면 2단계 검증이 조용히 기존 하이브리드
+                # 추론 방식으로 전환된다(verify_transcribed_solution 참고).
+                registered_book_titles = sorted({
+                    row.get("book_title") for row in list_registered_problems() if row.get("book_title")
+                })
+                if "쎈 중3-2" not in registered_book_titles:
+                    registered_book_titles.insert(0, "쎈 중3-2")
+                pick_c1, pick_c2 = st.columns(2)
+                with pick_c1:
+                    selected_book_title = st.selectbox(
+                        "📖 교재", registered_book_titles, key=f"{state_prefix}_book_title_select"
+                    )
+                with pick_c2:
+                    selected_problem_code = st.text_input(
+                        "🔢 문제 번호", value="0353", key=f"{state_prefix}_problem_code_input"
+                    )
+
                 up_c1, up_c2 = st.columns(2)
                 with up_c1:
                     uploaded_problem = st.file_uploader(
@@ -2581,12 +2776,15 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                     "images_submitted": images_submitted,
                     "label": label,
                     "api_text": api_text,
+                    "book_title": selected_book_title,
+                    "problem_code": selected_problem_code,
                 }
                 st.rerun()
             else:
                 # streamlit-cropper가 설치되지 않은 환경 - 크롭 단계 없이 원본 그대로 전사한다.
                 run_handwriting_ocr_stage(
                     s_bytes, p_bytes, uploaded_problem.type, images_submitted, label, api_text, draft_key,
+                    book_title=selected_book_title, problem_code=selected_problem_code,
                 )
         else:
             client = anthropic.Anthropic(api_key=api_key)
@@ -2681,6 +2879,7 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                 run_handwriting_ocr_stage(
                     crop_buf.getvalue(), pending["problem_bytes"], pending["problem_media_type"],
                     pending["images_submitted"], pending["label"], pending["api_text"], draft_key,
+                    book_title=pending.get("book_title", ""), problem_code=pending.get("problem_code", ""),
                 )
         with crop_c2:
             if st.button(
@@ -2691,6 +2890,7 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                 run_handwriting_ocr_stage(
                     pending["solution_bytes"], pending["problem_bytes"], pending["problem_media_type"],
                     pending["images_submitted"], pending["label"], pending["api_text"], draft_key,
+                    book_title=pending.get("book_title", ""), problem_code=pending.get("problem_code", ""),
                 )
 
     elif st.session_state.get(draft_key):
@@ -2733,8 +2933,20 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
             key=f"{state_prefix}_ocr_confirm_btn",
         ):
             try:
+                # DB에 등록된 정석 해설이 있으면 그걸 '바이블'로 대조 검증하고, 없으면
+                # verify_transcribed_solution()의 기본값(DEFAULT_REFERENCE_SOLUTION)으로
+                # 조용히 전환된다.
+                db_problem = get_problem_solution(draft.get("book_title", ""), draft.get("problem_code", ""))
+                verify_kwargs = {}
+                if db_problem:
+                    verify_kwargs["reference_solution"] = format_reference_solution(db_problem)
+                    st.caption(
+                        f"📚 등록된 정석 해설({draft.get('book_title')} {draft.get('problem_code')})과 대조했어요."
+                    )
                 with st.spinner("다혜T의 풀이 첨삭 및 힌트를 분석 중입니다..."):
-                    raw_diagnosis = verify_transcribed_solution(edited_text, st.session_state.student_grade)
+                    raw_diagnosis = verify_transcribed_solution(
+                        edited_text, st.session_state.student_grade, **verify_kwargs
+                    )
                 diagnosis, hint, parsed_ok = parse_handwriting_diagnosis(raw_diagnosis)
 
                 bot_reply = f"📝 **판독된 풀이 과정**\n\n{edited_text}\n\n---\n\n"

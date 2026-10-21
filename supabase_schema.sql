@@ -1,7 +1,7 @@
 -- ============================================================
 -- 알찬학원 신다혜 쌤의 수학 클리닉 - Supabase 스키마
 -- Supabase 대시보드 > SQL Editor 에서 이 파일 내용을 그대로 붙여넣고 실행하세요.
--- (앱 코드는 이 5개 테이블 이름/컬럼명을 그대로 참조하므로 이름을 바꾸면 안 됩니다.)
+-- (앱 코드는 이 6개 테이블 이름/컬럼명을 그대로 참조하므로 이름을 바꾸면 안 됩니다.)
 -- ============================================================
 
 -- gen_random_uuid()에 필요 (Supabase 신규 프로젝트는 기본 활성화되어 있지만, 혹시 몰라 명시)
@@ -81,6 +81,26 @@ create table if not exists ocr_corrections (
 );
 create index if not exists ocr_corrections_kakao_id_idx on ocr_corrections (kakao_id);
 
+-- 6) problem_solutions: 원장님이 '📚 해설 DB 관리'에서 등록한 교과과정 표준 해설
+--    (reference_steps/pitfalls)을 문제(교재명+문제번호) 단위로 저장한다. 손글씨 풀이
+--    첨삭 2단계 검증(app.py의 verify_transcribed_solution)이 이 데이터를 '바이블'로
+--    받아 학생 풀이와 대조 채점한다 - 등록된 문제가 없으면 기존 하이브리드 추론
+--    방식(DEFAULT_REFERENCE_SOLUTION)으로 조용히 전환되므로 이 테이블이 비어 있어도
+--    기능 자체는 막히지 않는다. book_title+problem_code 조합이 유니크해서 같은 문제를
+--    다시 등록하면 upsert로 덮어쓴다.
+create table if not exists problem_solutions (
+    id              uuid primary key default gen_random_uuid(),
+    book_title      text not null,
+    problem_code    text not null,
+    chapter_name    text not null default '',
+    reference_steps jsonb not null default '[]'::jsonb,
+    pitfalls        jsonb not null default '[]'::jsonb,
+    created_at      timestamptz not null default now(),
+    updated_at      timestamptz not null default now(),
+    unique (book_title, problem_code)
+);
+create index if not exists problem_solutions_lookup_idx on problem_solutions (book_title, problem_code);
+
 -- ------------------------------------------------------------
 -- (권장) Row Level Security 활성화
 -- 이 앱은 Streamlit 서버에서 SUPABASE_SERVICE_KEY(= service_role 키)로만 접근하고,
@@ -94,3 +114,4 @@ alter table chat_history   enable row level security;
 alter table pass_records   enable row level security;
 alter table daily_missions enable row level security;
 alter table ocr_corrections enable row level security;
+alter table problem_solutions enable row level security;
