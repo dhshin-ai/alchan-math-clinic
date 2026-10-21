@@ -1,7 +1,7 @@
 -- ============================================================
 -- 알찬학원 신다혜 쌤의 수학 클리닉 - Supabase 스키마
 -- Supabase 대시보드 > SQL Editor 에서 이 파일 내용을 그대로 붙여넣고 실행하세요.
--- (앱 코드는 이 6개 테이블 이름/컬럼명을 그대로 참조하므로 이름을 바꾸면 안 됩니다.)
+-- (앱 코드는 이 7개 테이블 이름/컬럼명을 그대로 참조하므로 이름을 바꾸면 안 됩니다.)
 -- ============================================================
 
 -- gen_random_uuid()에 필요 (Supabase 신규 프로젝트는 기본 활성화되어 있지만, 혹시 몰라 명시)
@@ -101,6 +101,27 @@ create table if not exists problem_solutions (
 );
 create index if not exists problem_solutions_lookup_idx on problem_solutions (book_title, problem_code);
 
+-- 7) student_questions: '🔍 오답 첨삭'의 손글씨 풀이 OCR 파이프라인에서 학생이 Quick-Edit을
+--    확정해 최종 진단/힌트를 받을 때마다(수정 여부와 무관하게 매번) 1건씩 쌓이는 구조화된
+--    첨삭 기록이다(app.py의 log_student_question() 참고). chat_history는 대화 전체를
+--    messages jsonb 블롭으로 담는 범용 로그이고, 이 테이블은 선생님 대시보드가 문제번호/
+--    OCR 텍스트/AI 피드백을 바로 훑어볼 수 있게 컬럼을 분리해 둔 전용 로그다.
+--    image_url은 Storage 버킷 'student_uploads'(public)에 올린 풀이 사진의 공개 URL이다 -
+--    이 테이블/버킷이 아직 없거나 업로드 권한이 없어도 첨삭 기능 자체는 조용히 정상
+--    동작한다(로깅 실패를 삼키도록 방어돼 있음).
+create table if not exists student_questions (
+    id           uuid primary key default gen_random_uuid(),
+    kakao_id     text references users(kakao_id) on delete cascade,
+    student_name text,
+    problem_code text,
+    image_url    text,
+    ocr_text     text,
+    ai_feedback  text,
+    created_at   timestamptz not null default now()
+);
+create index if not exists student_questions_kakao_id_idx on student_questions (kakao_id);
+create index if not exists student_questions_created_at_idx on student_questions (created_at desc);
+
 -- ------------------------------------------------------------
 -- (권장) Row Level Security 활성화
 -- 이 앱은 Streamlit 서버에서 SUPABASE_SERVICE_KEY(= service_role 키)로만 접근하고,
@@ -108,6 +129,16 @@ create index if not exists problem_solutions_lookup_idx on problem_solutions (bo
 -- anon/공개 키가 어딘가에 노출되더라도 아무 행도 읽고 쓸 수 없게 막아 주는
 -- 안전장치입니다. 허용 정책(policy)을 하나도 만들지 않을 것이므로, RLS를 켜는
 -- 순간 anon 키로는 완전히 닫힙니다.
+--
+-- ⚠️ student_questions에도 일부러 "모두 허용(anon도 insert/select 가능)" 정책을
+-- 추가하지 않았습니다. 위 설명대로 service_role 키는 RLS를 완전히 우회하므로
+-- 정책이 하나도 없어도 앱의 로깅/대시보드 조회는 100% 그대로 동작합니다. 반대로
+-- "allow all" 정책을 열면, anon 키가 어딘가에서 노출되는 순간 학생 이름/풀이 사진/
+-- AI 첨삭 내용을 누구나 읽고 조작할 수 있게 됩니다 - 그래서 다른 6개 테이블과 똑같이
+-- 안전한 기본값(RLS는 켜고 정책은 비움)을 유지했습니다. 정말로 anon 키로 직접
+-- 접근해야 하는 사정이 있다면, 꼭 필요한 범위만(예: insert만) 아래처럼 열어 쓰세요:
+--   create policy "student_questions anon insert" on student_questions
+--     for insert to anon with check (true);
 -- ------------------------------------------------------------
 alter table users          enable row level security;
 alter table chat_history   enable row level security;
@@ -115,3 +146,4 @@ alter table pass_records   enable row level security;
 alter table daily_missions enable row level security;
 alter table ocr_corrections enable row level security;
 alter table problem_solutions enable row level security;
+alter table student_questions enable row level security;

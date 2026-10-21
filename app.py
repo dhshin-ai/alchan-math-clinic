@@ -564,6 +564,52 @@ def log_ocr_correction(original_text, edited_text, image_bytes, kakao_id):
         pass
 
 
+STUDENT_UPLOADS_BUCKET = "student_uploads"
+
+
+def log_student_question(problem_code, image_bytes, ocr_text, ai_feedback):
+    """'🔍 오답 첨삭'(손글씨 풀이 OCR 파이프라인)에서 학생이 Quick-Edit을 확정해 최종
+    진단/힌트를 받을 때마다 - 수정 여부와 무관하게 매번 - student_questions에 1건을
+    남긴다. 선생님 대시보드가 문제번호/OCR 텍스트/AI 피드백을 구조화된 형태로 바로
+    훑어볼 수 있게 chat_history(대화 전체를 messages jsonb로 담는 범용 로그)와는
+    별도로 두는 전용 로그다.
+
+    풀이 사진은 Storage 버킷(STUDENT_UPLOADS_BUCKET)에 올려 공개 URL을 같이
+    저장한다. Storage 업로드가 실패해도(버킷/권한 문제 등) image_url만 빈 문자열로
+    두고 텍스트 기록은 계속 남긴다 - 이 로깅이 실패해도 학생에게 이미 보여준
+    첨삭 결과(화면)에는 전혀 영향이 없어야 하므로 예외를 전부 조용히 삼킨다.
+    """
+    if not supabase:
+        return
+    kakao_id = st.session_state.get("kakao_id")
+
+    image_url = ""
+    try:
+        try:
+            supabase.storage.create_bucket(STUDENT_UPLOADS_BUCKET, options={"public": True})
+        except Exception:
+            pass  # 이미 존재하거나 권한이 없으면 업로드 시도에서 자연히 드러난다
+        path = f"{kakao_id or 'anonymous'}/{uuid.uuid4()}.jpg"
+        supabase.storage.from_(STUDENT_UPLOADS_BUCKET).upload(
+            path, image_bytes, file_options={"content-type": "image/jpeg"}
+        )
+        image_url = supabase.storage.from_(STUDENT_UPLOADS_BUCKET).get_public_url(path)
+    except Exception:
+        image_url = ""
+
+    try:
+        supabase.table("student_questions").insert({
+            "kakao_id": kakao_id,
+            "student_name": st.session_state.get("student_name", ""),
+            "problem_code": problem_code,
+            "image_url": image_url,
+            "ocr_text": ocr_text,
+            "ai_feedback": ai_feedback,
+        }).execute()
+    except Exception:
+        pass
+
+
 def _embedded_user(row):
     """PostgREST 조인(embed)으로 함께 온 users 중첩 객체를 꺼낸다.
 
@@ -593,6 +639,28 @@ def fetch_all_chat_history():
         res = (
             supabase.table("chat_history")
             .select("*, users(nickname)")
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return True, (res.data or []), ""
+    except Exception as e:
+        return False, [], str(e)
+
+
+def fetch_student_questions():
+    """선생님 대시보드용: student_questions(손글씨 풀이 첨삭 전용 구조화 로그)를
+    최신순으로 불러온다.
+
+    '데이터 0건'과 '조회 자체가 실패함'을 구분해야 하므로(테이블이 아직 없는 환경
+    42P01 포함) (성공 여부, 행 목록, 에러 메시지) 튜플로 돌려준다 - 실패를 조용히
+    빈 리스트로 뭉개면 실제 오류가 나도 '기록이 0건'인 것처럼 보인다.
+    """
+    if not supabase:
+        return False, [], "Supabase 연결 정보(SUPABASE_URL/SUPABASE_SERVICE_KEY)가 설정되지 않았습니다."
+    try:
+        res = (
+            supabase.table("student_questions")
+            .select("*")
             .order("created_at", desc=True)
             .execute()
         )
@@ -1097,6 +1165,47 @@ def render_teacher_dashboard():
             with st.expander(f"👤 {nickname} · {feature} · {created_label}"):
                 st.caption(f"🆔 카카오 회원번호: {row.get('kakao_id', '-')}")
                 _render_msg_list(messages)
+
+    st.markdown("---")
+
+    st.markdown("#### 📝 손글씨 풀이 첨삭 기록 (최신순)")
+    st.caption("'🔍 오답 첨삭'에서 Quick-Edit을 확정해 받은 진단/힌트가 문항 단위로 쌓여요.")
+    sq_ok, sq_rows, sq_err = fetch_student_questions()
+    if not sq_ok:
+        show_friendly_error(sq_err, "😥 손글씨 풀이 첨삭 기록을 불러오는 중 문제가 생겼어요.")
+    elif not sq_rows:
+        st.info("아직 등록된 손글씨 풀이 첨삭 기록이 없습니다.")
+    else:
+        st.caption(f"총 {len(sq_rows)}건")
+        st.dataframe(
+            [
+                {
+                    "학생": row.get("student_name") or "익명 학생",
+                    "문제번호": row.get("problem_code") or "-",
+                    "시각": _iso_to_kst_label(row.get("created_at")),
+                    "AI 피드백": (
+                        (row.get("ai_feedback") or "")[:50] + "…"
+                        if len(row.get("ai_feedback") or "") > 50 else (row.get("ai_feedback") or "-")
+                    ),
+                }
+                for row in sq_rows
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.markdown("##### 🔍 문항별 상세 보기 (사진·OCR 텍스트·AI 피드백)")
+        for row in sq_rows:
+            student = row.get("student_name") or "익명 학생"
+            problem_code = row.get("problem_code") or "-"
+            created_label = _iso_to_kst_label(row.get("created_at"))
+            with st.expander(f"👤 {student} · 문제 {problem_code} · {created_label}"):
+                if row.get("image_url"):
+                    st.image(row["image_url"], width=280)
+                st.markdown("**📝 OCR 텍스트**")
+                st.code(row.get("ocr_text") or "-")
+                st.markdown("**🤖 AI 피드백**")
+                st.markdown(row.get("ai_feedback") or "-")
 
     st.markdown("---")
 
@@ -3109,13 +3218,20 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                     )
                 diagnosis, hint, parsed_ok = parse_handwriting_diagnosis(raw_diagnosis)
 
-                bot_reply = f"📝 **판독된 풀이 과정**\n\n{edited_text}\n\n---\n\n"
                 if not parsed_ok:
-                    bot_reply += diagnosis or "(빈 응답)"
+                    feedback_text = diagnosis or "(빈 응답)"
                 else:
-                    bot_reply += f"🔍 **진단 결과:** {diagnosis}"
+                    feedback_text = f"🔍 **진단 결과:** {diagnosis}"
                     if hint:
-                        bot_reply += f"\n\n💡 **다혜T의 역질문 힌트:** {hint}"
+                        feedback_text += f"\n\n💡 **다혜T의 역질문 힌트:** {hint}"
+                bot_reply = f"📝 **판독된 풀이 과정**\n\n{edited_text}\n\n---\n\n{feedback_text}"
+
+                # 최종 피드백이 나온 직후, 선생님 대시보드가 바로 훑어볼 수 있게 구조화된
+                # 로그(student_questions)를 무조건 남긴다 - Storage/DB 중 하나가 실패해도
+                # 이 로깅 자체가 학생에게 보여줄 첨삭 결과에 영향을 주면 안 된다.
+                log_student_question(
+                    draft.get("problem_code", ""), draft["solution_image_bytes"], edited_text, feedback_text,
+                )
 
                 st.session_state[messages_key].append({
                     "role": "user",
