@@ -2011,29 +2011,60 @@ def _render_clinic_message(msg):
 
 
 def render_question_archive_cards():
-    """question_archive를 날짜별(최신순)로 묶어 expander 카드로 보여준다 (마이페이지 '오답노트' 탭).
+    """'👤 마이페이지 > 📝 오답노트' - student_questions을 Supabase에서 직접 조회해
+    날짜별로 묶어 보여준다.
 
-    새로 질문하거나 후속 힌트를 주고받을 때마다 백그라운드에서 바로 저장되므로
-    (upsert_question_archive_entry → persist_current_student), 이 탭을 열 때마다
-    항상 최신 question_archive가 그대로 반영된다.
+    예전에는 st.session_state.question_archive(로그인 시 한 번 복원해 둔 캐시)를
+    그렸는데, 그 캐시가 세션에만 있다 보니 새로고침 등으로 세션이 새로 시작되면
+    로그인하기 전까지 빈 화면만 보이는 문제가 있었다. 이제는 이 함수가 호출될
+    때마다 - 세션 상태가 뭘 들고 있든 상관없이 - DB를 직접 조회한다.
     """
-    archive = st.session_state.get("question_archive", [])
-    if not archive:
-        st.info("아직 저장된 질문이 없어요. 질문을 올리면 여기에 차곡차곡 쌓여요!")
+    kakao_id = st.session_state.get("kakao_id")
+    if not kakao_id:
+        st.info("로그인하면 오답노트를 볼 수 있어요.")
+        return
+    if not supabase:
+        st.error(
+            "🚨 Supabase 연결 정보(SUPABASE_URL/SUPABASE_SERVICE_KEY)가 설정되지 않아 "
+            "오답노트를 불러올 수 없어요."
+        )
+        return
+
+    try:
+        res = (
+            supabase.table("student_questions")
+            .select("*")
+            .eq("kakao_id", kakao_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        rows = res.data or []
+    except Exception as e:
+        st.error(f"🚨 오답노트를 불러오는 중 DB 오류가 발생했어요.\n\n상세 원인: {e!r}")
+        return
+
+    if not rows:
+        st.info("아직 저장된 첨삭 기록이 없어요. '🔍 오답 첨삭'에서 사진을 올리면 여기에 차곡차곡 쌓여요!")
         return
 
     by_date = {}
-    for entry in archive:
-        date_key = (entry.get("created_at") or "")[:10] or "날짜 미상"
-        by_date.setdefault(date_key, []).append(entry)
+    for row in rows:
+        date_key = (row.get("created_at") or "")[:10] or "날짜 미상"
+        by_date.setdefault(date_key, []).append(row)
 
     for date_key in sorted(by_date.keys(), reverse=True):
         st.markdown(f"#### 🗓️ {date_key}")
-        day_entries = sorted(by_date[date_key], key=lambda e: e.get("created_at", ""), reverse=True)
-        for entry in day_entries:
-            with st.expander(f"{entry.get('feature', '')} · {entry.get('created_at', '')}"):
-                for msg in entry.get("messages", []):
-                    _render_clinic_message(msg)
+        for row in by_date[date_key]:
+            problem_label = f"문제 {row['problem_code']}번" if row.get("problem_code") else "문제 번호 미인식"
+            created_label = _iso_to_kst_label(row.get("created_at"))
+            with st.expander(f"🔍 오답 첨삭 · {problem_label} · {created_label}"):
+                if row.get("image_url"):
+                    st.image(row["image_url"], width=280)
+                if row.get("ocr_text"):
+                    st.markdown("**📝 판독된 풀이**")
+                    st.code(row["ocr_text"])
+                st.markdown("**🤖 다혜T의 첨삭**")
+                st.markdown(row.get("ai_feedback") or "-")
 
 
 def load_system_prompt(student_grade):
@@ -2554,6 +2585,47 @@ if not supabase:
 # (메인 화면에는 로그인 상태를 알리는 텍스트를 일절 띄우지 않는다)
 # ==========================================
 with st.sidebar:
+    # ==========================================
+    # 🚨 DB 강제 연결 테스트 - student_questions에 실제로 Insert가 되는지 즉시 확인하는
+    # 디버그 버튼. 성공/실패 어느 쪽이든 원문 예외/에러를 절대 숨기지 않고 그대로 띄운다.
+    # ==========================================
+    st.markdown('<div id="db-force-test-marker"></div>', unsafe_allow_html=True)
+    if st.button("🚨 DB 강제 연결 테스트", key="db_force_test_btn", use_container_width=True):
+        if not supabase:
+            st.error(
+                "🚨 Supabase 클라이언트가 None입니다. st.secrets에 SUPABASE_URL/"
+                "SUPABASE_SERVICE_KEY가 없거나 create_client() 생성 자체가 실패했습니다."
+            )
+        else:
+            try:
+                test_res = (
+                    supabase.table("student_questions")
+                    .insert({"problem_code": "TEST-000", "ai_feedback": "DB 연결 테스트"})
+                    .execute()
+                )
+                st.success(f"✅ DB 강제 연결 테스트 성공! 삽입된 데이터: {test_res.data}")
+            except Exception as e:
+                detail_lines = [f"예외 타입: {type(e).__name__}", f"원문: {e!r}"]
+                for attr in ("message", "code", "details", "hint"):
+                    val = getattr(e, attr, None)
+                    if val:
+                        detail_lines.append(f"{attr}: {val}")
+                st.error("🚨 DB 강제 연결 테스트 실패!\n\n" + "\n".join(detail_lines))
+    st.markdown(
+        """
+        <style>
+        div[data-testid="element-container"]:has(#db-force-test-marker)
+            + div[data-testid="element-container"] button {
+            background-color: #d32f2f !important;
+            color: white !important;
+            border-color: #b71c1c !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown("---")
+
     if st.session_state.authenticated:
         if st.button("🔓 로그아웃", use_container_width=True, key="sidebar_logout_btn"):
             persist_current_student()

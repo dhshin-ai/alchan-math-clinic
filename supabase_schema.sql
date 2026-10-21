@@ -147,3 +147,30 @@ alter table daily_missions enable row level security;
 alter table ocr_corrections enable row level security;
 alter table problem_solutions enable row level security;
 alter table student_questions enable row level security;
+
+-- ------------------------------------------------------------
+-- 🚨 진단용 "RLS 전면 개방" - student_questions가 계속 비어 있을 때 쓰는 비상 쿼리
+-- ------------------------------------------------------------
+-- student_questions에 insert가 한 건도 안 들어가는 가장 흔한 실제 원인은 RLS가 아니라
+-- st.secrets의 SUPABASE_SERVICE_KEY 값이 service_role 키가 아니라 anon 키로 잘못
+-- 들어가 있는 경우입니다. 먼저 Supabase 대시보드 > Settings > API에서
+-- "service_role" 비밀 키(anon 키와는 다른 값입니다)를 복사해 SUPABASE_SERVICE_KEY에
+-- 다시 넣고, 사이드바의 "🚨 DB 강제 연결 테스트" 버튼으로 먼저 확인해 보세요 - 이
+-- 한 줄 수정으로 끝나는 경우가 대부분입니다.
+--
+-- 그래도 계속 막혀서 정말로 anon 키로도 막히지 않게 완전히 열어야 한다면, 아래 2줄을
+-- 실행하세요. 이렇게 하면 anon 키를 아는 누구나(= 이 키가 브라우저에 노출되는 모든
+-- 사람) student_questions의 모든 행을 읽고/쓰고/지울 수 있게 됩니다 - 학생 이름,
+-- 풀이 사진 URL, AI 첨삭 내용이 전부 공개된다는 뜻이니, 원인 파악이 끝나는 대로
+-- 반드시 아래 "원복" 쿼리로 되돌리세요.
+drop policy if exists "allow all student_questions (TEMP - 진단용)" on student_questions;
+create policy "allow all student_questions (TEMP - 진단용)"
+    on student_questions
+    for all
+    to public
+    using (true)
+    with check (true);
+
+-- ↑ 원인 파악이 끝나면 아래 쿼리로 반드시 원복하세요(정책만 삭제 - RLS는 계속 켜진
+-- 채로 둬도 service_role 키는 영향을 받지 않습니다):
+--   drop policy if exists "allow all student_questions (TEMP - 진단용)" on student_questions;
