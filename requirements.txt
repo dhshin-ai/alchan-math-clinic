@@ -8,3 +8,4 @@ supabase>=2.9.0
 qrcode[pil]>=7.4
 streamlit-cropper>=0.2.3
 PyPDF2>=3.0.0
+pypdfium2>=4.30.0

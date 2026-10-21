@@ -9,6 +9,7 @@ PDF 텍스트 추출(PyPDF2)과 LLM 파싱을 분리해 둔 이유: 추출된 �
 번의 LLM 호출로 모든 문항을 안정적으로 뽑아내기 어렵다(출력 토큰 한도에 걸려 뒤쪽
 문항이 잘림) - 그래서 페이지 경계를 기준으로 여러 청크로 쪼개 각각 파싱한 뒤 합친다.
 """
+import base64
 import io
 import json
 import re
@@ -20,11 +21,23 @@ try:
 except ImportError:
     PdfReader = None
 
+try:
+    import pypdfium2 as pdfium
+except ImportError:
+    pdfium = None
+
 
 def is_pdf_parser_available():
     """PyPDF2가 설치되어 있는지 확인한다 - 없으면 호출하는 쪽이 업로드 UI를 숨기거나
     안내 문구로 대체해야 한다."""
     return PdfReader is not None
+
+
+def is_pdf_image_available():
+    """pypdfium2(스캔본 PDF를 Vision이 읽을 이미지로 렌더링하는 용도)가 설치되어
+    있는지 확인한다. poppler 같은 외부 바이너리 없이 순수 파이썬으로 동작해서
+    Streamlit Cloud에서도 추가 설치 없이 그대로 쓸 수 있다."""
+    return pdfium is not None
 
 
 def extract_pdf_text(pdf_bytes):
@@ -45,6 +58,121 @@ def extract_pdf_text(pdf_bytes):
         page_text = page.extract_text() or ""
         pages_text.append(f"--- PAGE {i + 1} ---\n{page_text}")
     return "\n\n".join(pages_text)
+
+
+def is_scanned_pdf_text(pdf_text, min_chars_per_page=50):
+    """extract_pdf_text()가 돌려준 '--- PAGE n ---' 마커 섞인 전체 텍스트를 보고,
+    페이지당 평균 추출 글자수가 min_chars_per_page 미만이면 스캔본(이미지) PDF로
+    판정한다. 텍스트가 통째로 비어 있으면(페이지 추출 자체가 안 됐으면) 당연히
+    스캔본으로 본다.
+    """
+    if not (pdf_text or "").strip():
+        return True
+    page_count = len(re.findall(r"--- PAGE \d+ ---", pdf_text))
+    if page_count == 0:
+        return True
+    body_only = re.sub(r"--- PAGE \d+ ---", "", pdf_text)
+    avg_chars_per_page = len(body_only.strip()) / page_count
+    return avg_chars_per_page < min_chars_per_page
+
+
+def convert_pdf_to_images(pdf_bytes, max_pages=5, scale=2.0):
+    """pypdfium2로 PDF 페이지를 JPEG 이미지 바이트 리스트로 렌더링한다.
+
+    poppler 등 외부 바이너리 설치가 필요 없는 순수 파이썬 렌더러라 Streamlit Cloud
+    환경에서도 추가 설치 없이 동작한다. max_pages로 앞쪽 페이지만 렌더링하는 이유:
+    스캔본 해설지 전체(수십~수백 페이지)를 전부 Vision으로 돌리면 시간/비용이
+    과도해지므로, 1차 버전은 처리 범위를 제한한다.
+    """
+    if pdfium is None:
+        raise RuntimeError("pypdfium2가 설치되지 않았습니다. requirements.txt를 확인해 주세요.")
+    pdf = pdfium.PdfDocument(pdf_bytes)
+    try:
+        images = []
+        for i in range(min(len(pdf), max_pages)):
+            page = pdf[i]
+            try:
+                bitmap = page.render(scale=scale)
+                pil_image = bitmap.to_pil().convert("RGB")
+                buf = io.BytesIO()
+                pil_image.save(buf, format="JPEG", quality=90)
+                images.append(buf.getvalue())
+            finally:
+                page.close()
+        return images
+    finally:
+        pdf.close()
+
+
+SCANNED_SOLUTION_PARSER_SYSTEM_PROMPT = (
+    "너는 수학 해설지 이미지 분석 전문가다. 제공된 해설지 페이지 이미지에서 각 문항 번호를 "
+    "식별하고, 해설을 4단계(개념착안 -> 관계식 -> 전개/변형 -> 계산) 정석 풀이와 pitfalls "
+    "리스트로 구조화하여 JSON으로 추출하라.\n\n"
+    "반드시 아래 JSON 배열 형식으로만 출력하라:\n"
+    "[\n"
+    "  {\n"
+    '    "problem_code": "문제번호(예: 0353)",\n'
+    '    "reference_steps": [ {"step": 1, "title": "개념착안", "math": "..."}, ... ],\n'
+    '    "pitfalls": ["자주 틀리는 개념이나 부호 실수"]\n'
+    "  }, ...\n"
+    "]\n\n"
+    "- 이미지 속 글자가 흐리거나 일부가 잘려서 해설이 불완전한 문제는 통째로 건너뛰고 "
+    "결과에 포함하지 마라.\n"
+    "- 반드시 위 JSON 배열만 출력하라. 다른 설명, 머리말, 코드블록 표시 없이 JSON 그 자체만 "
+    "출력해라. 이미지 속에서 문항 번호를 식별할 수 없으면 빈 배열 []을 출력하라."
+)
+
+
+def _parse_scanned_page(image_bytes, model_name, api_key):
+    client = anthropic.Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model=model_name,
+        max_tokens=4000,
+        system=SCANNED_SOLUTION_PARSER_SYSTEM_PROMPT,
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": base64.b64encode(image_bytes).decode("utf-8"),
+                    },
+                },
+                {"type": "text", "text": "이 해설지 페이지 이미지 속 문제들을 추출해줘."},
+            ],
+        }],
+    )
+    raw = "".join(block.text for block in response.content if hasattr(block, "text")).strip()
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
+    parsed = json.loads(cleaned)
+    return parsed if isinstance(parsed, list) else []
+
+
+def parse_scanned_solutions(pdf_bytes, model_name, api_key, max_pages=5, progress_callback=None):
+    """스캔본(이미지) PDF 전용 파서: 텍스트 추출 없이 페이지를 이미지로 렌더링해
+    Vision LLM이 직접 문항/해설을 읽어 JSON으로 추출한다.
+
+    parse_bulk_solutions()와 동일하게 problem_code 기준으로 결과를 합치고, 한
+    페이지가 실패해도 나머지 페이지는 계속 처리한다. max_pages만큼만(기본 앞쪽
+    5페이지) 처리한다 - convert_pdf_to_images() 참고.
+    """
+    images = convert_pdf_to_images(pdf_bytes, max_pages=max_pages)
+    by_code = {}
+    for i, image_bytes in enumerate(images):
+        if progress_callback:
+            progress_callback(i, len(images))
+        try:
+            for problem in _parse_scanned_page(image_bytes, model_name, api_key):
+                code = str(problem.get("problem_code", "")).strip()
+                if code:
+                    by_code[code] = problem
+        except Exception:
+            continue
+    if progress_callback:
+        progress_callback(len(images), len(images))
+    return list(by_code.values())
 
 
 def _split_into_chunks(full_text, max_chars=6000):

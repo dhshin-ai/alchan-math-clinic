@@ -13,7 +13,14 @@ import anthropic
 import streamlit as st
 from utils.math_ocr import recognize_handwriting_latex
 from utils.solution_db import save_problem_solution, get_problem_solution, list_registered_problems
-from utils.pdf_parser import is_pdf_parser_available, extract_pdf_text, parse_bulk_solutions
+from utils.pdf_parser import (
+    is_pdf_parser_available,
+    is_pdf_image_available,
+    extract_pdf_text,
+    is_scanned_pdf_text,
+    parse_bulk_solutions,
+    parse_scanned_solutions,
+)
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
@@ -719,8 +726,11 @@ def _render_solution_db_bulk_tab():
     with bulk_c2:
         bulk_chapter_name = st.text_input("단원명", placeholder="예: 원과 직선", key="sdb_bulk_chapter_name")
 
-    if not is_pdf_parser_available():
-        st.warning("PDF 파싱 라이브러리(PyPDF2)가 아직 이 환경에 설치되지 않았어요. 선생님에게 문의해 주세요.")
+    if not is_pdf_parser_available() and not is_pdf_image_available():
+        st.warning(
+            "PDF 파싱 라이브러리(PyPDF2/pypdfium2)가 아직 이 환경에 설치되지 않았어요. "
+            "선생님에게 문의해 주세요."
+        )
         return
 
     uploaded_pdf = st.file_uploader("해설지 PDF 업로드", type=["pdf"], key="sdb_bulk_pdf")
@@ -737,6 +747,18 @@ def _render_solution_db_bulk_tab():
         elif not bulk_book_title.strip():
             st.warning("교재명을 입력해 주세요.")
         else:
+            pdf_bytes = uploaded_pdf.getvalue()
+
+            # 1단계: 텍스트 추출을 먼저 시도해 보고, 페이지당 글자수가 너무 적으면
+            # (스캔본/이미지 PDF로 판단) 바로 Vision 모드로 전환한다.
+            pdf_text = ""
+            if is_pdf_parser_available():
+                try:
+                    pdf_text = extract_pdf_text(pdf_bytes)
+                except Exception:
+                    pdf_text = ""
+            is_scanned = is_scanned_pdf_text(pdf_text)
+
             progress_bar = st.progress(0.0)
 
             def _on_progress(done, total):
@@ -744,21 +766,37 @@ def _render_solution_db_bulk_tab():
                     progress_bar.progress(done / total)
 
             problems = None
-            with st.spinner("PDF를 분석하여 문항별로 쪼개고 있습니다. (시간이 다소 소요됩니다)..."):
-                try:
-                    pdf_text = extract_pdf_text(uploaded_pdf.getvalue())
-                    problems = parse_bulk_solutions(
-                        pdf_text, MODEL_NAME, api_key, progress_callback=_on_progress,
-                    )
-                except Exception as e:
-                    show_friendly_error(e, "😥 PDF 분석 중 문제가 생겼어요.")
+            try:
+                if is_scanned:
+                    st.info("ℹ️ 스캔본(이미지) PDF가 감지되어 Vision AI 모드로 자동 전환하여 문항을 분석합니다...")
+                    if not is_pdf_image_available():
+                        st.error(
+                            "스캔본(이미지) PDF로 보이는데 Vision 변환 라이브러리(pypdfium2)가 "
+                            "설치되지 않아 처리할 수 없어요. 선생님에게 문의해 주세요."
+                        )
+                    else:
+                        st.caption("스캔본 모드는 처리 시간/비용 때문에 앞쪽 5페이지까지만 분석해요.")
+                        with st.spinner(
+                            "PDF를 이미지로 변환하고 Vision AI로 문항을 분석하는 중입니다. "
+                            "(시간이 다소 소요됩니다)..."
+                        ):
+                            problems = parse_scanned_solutions(
+                                pdf_bytes, MODEL_NAME, api_key, progress_callback=_on_progress,
+                            )
+                else:
+                    with st.spinner("PDF를 분석하여 문항별로 쪼개고 있습니다. (시간이 다소 소요됩니다)..."):
+                        problems = parse_bulk_solutions(
+                            pdf_text, MODEL_NAME, api_key, progress_callback=_on_progress,
+                        )
+            except Exception as e:
+                show_friendly_error(e, "😥 PDF 분석 중 문제가 생겼어요.")
             progress_bar.empty()
 
             if problems is not None:
                 if not problems:
                     st.warning(
-                        "문항을 하나도 추출하지 못했어요. 스캔본/이미지로만 된 PDF는 텍스트 추출이 "
-                        "안 될 수 있어요 - 텍스트가 선택/복사되는 PDF인지 확인해 주세요."
+                        "문항을 하나도 추출하지 못했어요. 문항 번호를 알아보기 어려운 화질이거나 "
+                        "해설 서식이 특이한 PDF일 수 있어요."
                     )
                 else:
                     st.success(f"✅ {len(problems)}개 문항을 추출했어요! 아래 목록을 확인하고 등록해 주세요.")
