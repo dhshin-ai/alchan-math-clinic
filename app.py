@@ -13,6 +13,7 @@ import anthropic
 import streamlit as st
 from utils.math_ocr import recognize_handwriting_latex
 from utils.solution_db import save_problem_solution, get_problem_solution, list_registered_problems
+from utils.pdf_parser import is_pdf_parser_available, extract_pdf_text, parse_bulk_solutions
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
@@ -634,18 +635,8 @@ def convert_solution_to_reference_steps(raw_solution_text):
     return json.loads(cleaned)
 
 
-def render_solution_db_admin_section():
-    """원장님용 '📚 해설 DB 관리' - 교과과정 표준 해설을 등록/수정하고 현황을 확인한다.
-
-    등록된 해설은 손글씨 풀이 첨삭의 2단계 검증에서 '바이블'로 쓰인다
-    (app.py의 get_problem_solution()/format_reference_solution() 참고).
-    """
-    st.markdown("#### 📚 해설 DB 관리")
-    st.caption(
-        "교과과정 표준 해설을 등록해두면, 손글씨 첨삭에서 학생 풀이를 이 해설과 "
-        "대조해 더 정밀하게 채점해요. 등록 안 된 문제는 기존 방식으로 자동 전환돼요."
-    )
-
+def _render_solution_db_single_tab():
+    """'✍️ 단건 수동 등록' 탭 - 문제 1개씩 해설지 텍스트를 붙여넣어 등록한다."""
     info_c1, info_c2, info_c3 = st.columns(3)
     with info_c1:
         sdb_book_title = st.text_input("교재명", value="쎈 중3-2", key="sdb_book_title")
@@ -715,6 +706,137 @@ def render_solution_db_admin_section():
                     st.rerun()
                 else:
                     st.error(f"😥 저장 중 문제가 생겼어요.\n\n상세 에러: {save_err}")
+
+
+def _render_solution_db_bulk_tab():
+    """'📄 PDF 대량 등록 (Bulk)' 탭 - 해설지 PDF 한 권을 통째로 올려 문항 단위로 쪼개서
+    한꺼번에 등록한다."""
+    st.caption("해설지 PDF를 통째로 올리면 문항별로 쪼개서 한꺼번에 DB에 등록할 수 있어요.")
+
+    bulk_c1, bulk_c2 = st.columns(2)
+    with bulk_c1:
+        bulk_book_title = st.text_input("교재명", value="쎈 중3-2", key="sdb_bulk_book_title")
+    with bulk_c2:
+        bulk_chapter_name = st.text_input("단원명", placeholder="예: 원과 직선", key="sdb_bulk_chapter_name")
+
+    if not is_pdf_parser_available():
+        st.warning("PDF 파싱 라이브러리(PyPDF2)가 아직 이 환경에 설치되지 않았어요. 선생님에게 문의해 주세요.")
+        return
+
+    uploaded_pdf = st.file_uploader("해설지 PDF 업로드", type=["pdf"], key="sdb_bulk_pdf")
+
+    if st.button(
+        "🚀 전체 문항 자동 추출 및 등록",
+        key="sdb_bulk_run_btn",
+        type="primary",
+        use_container_width=True,
+        disabled=not uploaded_pdf,
+    ):
+        if not api_key:
+            st.error("API 키가 설정되지 않았습니다.")
+        elif not bulk_book_title.strip():
+            st.warning("교재명을 입력해 주세요.")
+        else:
+            progress_bar = st.progress(0.0)
+
+            def _on_progress(done, total):
+                if total:
+                    progress_bar.progress(done / total)
+
+            problems = None
+            with st.spinner("PDF를 분석하여 문항별로 쪼개고 있습니다. (시간이 다소 소요됩니다)..."):
+                try:
+                    pdf_text = extract_pdf_text(uploaded_pdf.getvalue())
+                    problems = parse_bulk_solutions(
+                        pdf_text, MODEL_NAME, api_key, progress_callback=_on_progress,
+                    )
+                except Exception as e:
+                    show_friendly_error(e, "😥 PDF 분석 중 문제가 생겼어요.")
+            progress_bar.empty()
+
+            if problems is not None:
+                if not problems:
+                    st.warning(
+                        "문항을 하나도 추출하지 못했어요. 스캔본/이미지로만 된 PDF는 텍스트 추출이 "
+                        "안 될 수 있어요 - 텍스트가 선택/복사되는 PDF인지 확인해 주세요."
+                    )
+                else:
+                    st.success(f"✅ {len(problems)}개 문항을 추출했어요! 아래 목록을 확인하고 등록해 주세요.")
+                    st.session_state["_sdb_bulk_problems"] = problems
+                    st.session_state["_sdb_bulk_book_title"] = bulk_book_title
+                    st.session_state["_sdb_bulk_chapter_name"] = bulk_chapter_name
+
+    pending_problems = st.session_state.get("_sdb_bulk_problems")
+    if pending_problems:
+        st.markdown(f"##### 🔍 추출된 {len(pending_problems)}개 문항")
+        st.dataframe(
+            [
+                {
+                    "문제번호": p.get("problem_code", "-"),
+                    "단계 수": len(p.get("reference_steps") or []),
+                    "함정 수": len(p.get("pitfalls") or []),
+                }
+                for p in pending_problems
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+        with st.expander("JSON 원본 보기"):
+            st.code(json.dumps(pending_problems, ensure_ascii=False, indent=2), language="json")
+
+        if st.button(
+            f"💾 {len(pending_problems)}개 문항 전체 DB에 등록",
+            key="sdb_bulk_save_btn",
+            type="primary",
+            use_container_width=True,
+        ):
+            saved_book_title = st.session_state.get("_sdb_bulk_book_title", bulk_book_title)
+            saved_chapter_name = st.session_state.get("_sdb_bulk_chapter_name", bulk_chapter_name)
+            success_count = 0
+            failed = []
+            with st.spinner(f"{len(pending_problems)}개 문항을 등록하는 중입니다..."):
+                for problem in pending_problems:
+                    code = str(problem.get("problem_code", "")).strip()
+                    if not code:
+                        failed.append(("(번호 없음)", "problem_code가 비어 있어 건너뜀"))
+                        continue
+                    save_ok, save_err = save_problem_solution(
+                        saved_book_title, code, saved_chapter_name,
+                        problem.get("reference_steps", []), problem.get("pitfalls", []),
+                    )
+                    if save_ok:
+                        success_count += 1
+                    else:
+                        failed.append((code, save_err))
+
+            if failed:
+                st.warning(f"⚠️ {success_count}개 등록 완료, {len(failed)}개는 실패/건너뜀.")
+                with st.expander("실패/건너뜀 목록 보기"):
+                    for code, err in failed:
+                        st.caption(f"- {code}: {err}")
+            else:
+                st.success(f"✅ {success_count}개 문항을 모두 등록했어요!")
+            st.session_state.pop("_sdb_bulk_problems", None)
+            st.rerun()
+
+
+def render_solution_db_admin_section():
+    """원장님용 '📚 해설 DB 관리' - 교과과정 표준 해설을 등록/수정하고 현황을 확인한다.
+
+    등록된 해설은 손글씨 풀이 첨삭의 2단계 검증에서 '바이블'로 쓰인다
+    (app.py의 get_problem_solution()/format_reference_solution() 참고).
+    """
+    st.markdown("#### 📚 해설 DB 관리")
+    st.caption(
+        "교과과정 표준 해설을 등록해두면, 손글씨 첨삭에서 학생 풀이를 이 해설과 "
+        "대조해 더 정밀하게 채점해요. 등록 안 된 문제는 기존 방식으로 자동 전환돼요."
+    )
+
+    tab_single, tab_bulk = st.tabs(["✍️ 단건 수동 등록", "📄 PDF 대량 등록 (Bulk)"])
+    with tab_single:
+        _render_solution_db_single_tab()
+    with tab_bulk:
+        _render_solution_db_bulk_tab()
 
     st.markdown("##### 📋 등록 현황")
     registered = list_registered_problems()
