@@ -568,23 +568,33 @@ STUDENT_UPLOADS_BUCKET = "student_uploads"
 
 
 def log_student_question(problem_code, image_bytes, ocr_text, ai_feedback):
-    """'🔍 오답 첨삭'(손글씨 풀이 OCR 파이프라인)에서 학생이 Quick-Edit을 확정해 최종
-    진단/힌트를 받을 때마다 - 수정 여부와 무관하게 매번 - student_questions에 1건을
-    남긴다. 선생님 대시보드가 문제번호/OCR 텍스트/AI 피드백을 구조화된 형태로 바로
-    훑어볼 수 있게 chat_history(대화 전체를 messages jsonb로 담는 범용 로그)와는
-    별도로 두는 전용 로그다.
+    """'🔍 오답 첨삭'에서 첨삭 결과(진단/피드백)가 나올 때마다 - Quick-Edit 확정이든
+    1장짜리 단일 호출이든 - student_questions에 1건을 남긴다. 선생님 대시보드가
+    문제번호/OCR 텍스트/AI 피드백을 구조화된 형태로 바로 훑어볼 수 있게 chat_history
+    (대화 전체를 messages jsonb로 담는 범용 로그)와는 별도로 두는 전용 로그다.
 
-    풀이 사진은 Storage 버킷(STUDENT_UPLOADS_BUCKET)에 올려 공개 URL을 같이
-    저장한다. Storage 업로드가 실패해도(버킷/권한 문제 등) image_url만 빈 문자열로
-    두고 텍스트 insert는 계속 시도한다.
+    st.toast처럼 rerun 타이밍에 사라질 수 있는 위젯에 의존하지 않는다 - 단계별 진행
+    상황을 st.session_state["last_save_status"]에 전부 적어 두고, 호출부가 rerun을
+    하더라도 render_last_save_status_debug_card()가 다음 스크립트 실행에서 그 기록을
+    그대로 다시 그린다. Supabase 클라이언트가 없으면 조용히 return하지 않고 그
+    자리에서 바로 st.error()를 띄운다.
 
-    돌려주는 값: (성공 여부, 에러 메시지). DB insert 실패는 더 이상 조용히 삼키지
-    않는다 - student_questions 테이블이 아직 생성되지 않았거나(42P01) 권한 문제가
-    있을 때 "저장은 실패했는데 화면엔 아무 신호도 없는" 상태를 막기 위해, 호출하는
-    쪽(Quick-Edit 확정 버튼)이 이 결과를 보고 st.toast로 바로 알려준다.
+    돌려주는 값: (성공 여부, 에러 메시지) - 호출부가 추가로 분기하고 싶을 때를 위해
+    남겨 두지만, 화면 표시는 이 함수가 전부 책임진다.
     """
+    steps = []
+
+    def _step(ok, text):
+        steps.append({"ok": ok, "text": text})
+
     if not supabase:
-        return False, "Supabase 연결 정보(SUPABASE_URL/SUPABASE_SERVICE_KEY)가 설정되지 않았습니다."
+        error_msg = "SUPABASE_URL/SUPABASE_SERVICE_KEY가 설정되지 않았거나 클라이언트 생성에 실패했습니다."
+        _step(False, "Supabase 클라이언트 연결 실패")
+        st.session_state["last_save_status"] = {"ok": False, "steps": steps, "error": error_msg, "row_id": None}
+        st.error("🚨 Supabase 클라이언트 연결 실패! Secrets에 SUPABASE_URL과 키가 올바른지 확인하세요.")
+        return False, error_msg
+
+    _step(True, "Supabase 클라이언트 확인 완료")
     kakao_id = st.session_state.get("kakao_id")
 
     image_url = ""
@@ -598,11 +608,13 @@ def log_student_question(problem_code, image_bytes, ocr_text, ai_feedback):
             path, image_bytes, file_options={"content-type": "image/jpeg"}
         )
         image_url = supabase.storage.from_(STUDENT_UPLOADS_BUCKET).get_public_url(path)
-    except Exception:
+        _step(True, f"풀이 사진 Storage 업로드 성공 ({path})")
+    except Exception as e:
         image_url = ""  # 이미지 업로드는 부가 기능 - 실패해도 텍스트 기록은 계속 남긴다
+        _step(False, f"풀이 사진 Storage 업로드 실패(텍스트 기록은 계속 진행): {e}")
 
     try:
-        supabase.table("student_questions").insert({
+        insert_res = supabase.table("student_questions").insert({
             "kakao_id": kakao_id,
             "student_name": st.session_state.get("student_name") or "",
             "problem_code": problem_code or "",
@@ -610,9 +622,41 @@ def log_student_question(problem_code, image_bytes, ocr_text, ai_feedback):
             "ocr_text": ocr_text or "",
             "ai_feedback": ai_feedback or "",
         }).execute()
+        row_id = None
+        try:
+            row_id = (insert_res.data or [{}])[0].get("id")
+        except Exception:
+            row_id = None
+        _step(True, f"student_questions Insert 성공 (Row ID: {row_id})")
+        st.session_state["last_save_status"] = {"ok": True, "steps": steps, "error": "", "row_id": row_id}
         return True, ""
     except Exception as e:
+        _step(False, f"student_questions Insert 실패: {e}")
+        st.session_state["last_save_status"] = {"ok": False, "steps": steps, "error": str(e), "row_id": None}
         return False, str(e)
+
+
+def render_last_save_status_debug_card():
+    """log_student_question()이 st.session_state['last_save_status']에 남긴 단계별
+    진행 기록을 st.status 박스로 보여준다.
+
+    st.status/st.toast 같은 위젯 자체는 st.rerun() 한 번으로도 사라질 수 있어서,
+    위젯을 그대로 들고 있지 않고 세션 상태에 저장된 데이터를 매 스크립트 실행마다
+    새로 그린다 - 그래서 Quick-Edit 확정 버튼이 st.rerun()을 호출한 '다음' 실행에서도
+    같은 내용이 그대로 남아 있다.
+    """
+    status_data = st.session_state.get("last_save_status")
+    if not status_data:
+        return
+    final_ok = status_data.get("ok")
+    label = "📡 데이터베이스 기록 처리 완료" if final_ok else "📡 데이터베이스 기록 처리 실패"
+    with st.status(label, expanded=not final_ok, state=("complete" if final_ok else "error")):
+        for step in status_data.get("steps", []):
+            st.write(("✅ " if step["ok"] else "❌ ") + step["text"])
+        if final_ok:
+            st.success(f"✅ DB 저장 성공! (Row ID: {status_data.get('row_id')})")
+        else:
+            st.error(f"❌ Insert 실패 상세 원인: {status_data.get('error')}")
 
 
 def _embedded_user(row):
@@ -2842,6 +2886,110 @@ def format_reference_solution(problem_row):
     return "\n".join(lines)
 
 
+PROBLEM_CODE_DETECT_SYSTEM_PROMPT = (
+    "너는 문제집 사진에서 인쇄된 문제 번호만 정확히 읽어내는 전문가다. 사진 속에서 이 문제의 "
+    "번호(보통 3~4자리 숫자, 예: 0353)를 찾아 숫자만 출력하라. 번호를 찾을 수 없으면 'NONE'이라고만 "
+    "출력하라. 다른 설명은 절대 덧붙이지 마라."
+)
+
+
+def detect_problem_code(image_bytes, media_type):
+    """'문제집에 바로 풀었어요'(1장 모드)에서 사진 속 인쇄된 문제 번호를 Vision으로 감지한다.
+
+    실패하거나 번호를 못 찾으면 빈 문자열을 돌려준다 - 호출하는 쪽이 DB 매칭 없이
+    기존 자유형식 첨삭으로 조용히 전환해야 한다. 이 감지 자체가 핵심 첨삭 기능을
+    막으면 안 되므로 예외를 전부 삼킨다.
+    """
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model=MODEL_NAME,
+            max_tokens=50,
+            system=PROBLEM_CODE_DETECT_SYSTEM_PROMPT,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": base64.b64encode(image_bytes).decode("utf-8"),
+                        },
+                    },
+                    {"type": "text", "text": "이 사진 속 인쇄된 문제 번호를 찾아줘."},
+                ],
+            }],
+        )
+        raw_code = get_response_text(response).strip()
+        return re.sub(r"[^0-9]", "", raw_code)  # 'NONE'/잡음을 지우고 숫자만 남긴다
+    except Exception:
+        return ""
+
+
+def verify_image_against_reference(image_bytes, media_type, reference_solution, student_grade):
+    """1장 모드 전용 대조(Diff) 검증: 별도 OCR 단계 없이 사진 속 손글씨 풀이를 Vision이
+    직접 읽으면서 동시에 '정석 해설(reference_solution)'과 대조한다.
+
+    HANDWRITING_VERIFY_SYSTEM_PROMPT(텍스트 전용)와 같은 채점 규칙/출력 형식을 쓰지만,
+    입력이 OCR된 텍스트가 아니라 이미지라는 점만 다르다 - 그래서 시스템 프롬프트 맨 앞에
+    "사진 속 손글씨를 먼저 읽어라"는 지시만 추가한 변형판을 쓴다.
+    """
+    client = anthropic.Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model=MODEL_NAME,
+        max_tokens=1200,
+        system=(
+            "너는 계산을 수행하는 모델이 아니라, 주어진 '정석 해설'을 기준으로 사진 속 학생의 "
+            "손글씨 풀이를 채점하는 대조(Diff) 알고리즘이다. 절대 네 스스로 문제를 풀거나 식을 "
+            "새로 계산하지 마라.\n\n"
+            "★ [검증 규칙]:\n"
+            "1. 사진 속 학생의 풀이를 위에서부터 줄 단위로 읽어라.\n"
+            "2. 학생의 각 줄이 정석 해설의 어느 단계에 해당하는지 매칭하라.\n"
+            "3. 정석 해설의 단계별 수식과 학생 풀이 간에 차이점(누락된 항, 부호 오류)이 발견된 "
+            "최초의 줄을 특정하라.\n"
+            "4. 정석 해설을 그대로 노출하지 말고, 학생이 오류를 범한 단계의 '핵심 개념'을 "
+            "떠올리도록 1줄짜리 소크라테스 역질문을 작성하라.\n"
+            "5. 절대 네가 대신 식을 전개하거나 계산한 결과를 적어서 보여주지 마라 - 오류가 발생한 "
+            "줄과 개념만 짚어라.\n\n"
+            "★ [🚨 식의 '전제'와 '전개 과정'을 구분해라 - 맞는 식을 틀렸다고 억지 부리지 마라]:\n"
+            "- 학생의 어떤 줄이 정석 해설의 한 단계와 수학적으로 동등하다면(표현이 다르더라도) "
+            "그 줄 자체를 의심하지 마라. 차이는 '그 줄에서 다음 줄로 넘어가는 전개/계산 과정'에서만 "
+            "찾아라.\n\n"
+            "★ [🚨 수식 서식 - 한 줄로 뭉개서 쓰지 마라]:\n"
+            "- 수식을 인라인($...$)으로 한 줄에 연달아 나열하지 마라. 짧게 하나만 인용할 때만 "
+            "인라인 $...$를 써라.\n\n"
+            "★ [출력 형식 - 반드시 이 2줄 형식 그대로, 다른 설명 없이]:\n"
+            "DIAGNOSIS: (정석 해설의 몇 번째 단계에 해당하는 줄에서 어떤 차이가 발견됐는지 1줄로 "
+            "요약. 차이가 없으면 어디까지 정석 해설과 일치하는지 1줄로 요약)\n"
+            "HINT: (정석 해설/정답을 그대로 노출하지 않는 소크라테스식 역질문 1줄. 수식은 "
+            "'$...$'로 표기)"
+        ),
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": base64.b64encode(image_bytes).decode("utf-8"),
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        f"[과목: {student_grade}]\n\n"
+                        f"[정석 해설 (Reference Solution)]\n{reference_solution}\n\n"
+                        "위 정석 해설을 기준으로 사진 속 학생 풀이를 처음부터 대조 검증해줘."
+                    ),
+                },
+            ],
+        }],
+    )
+    return get_response_text(response)
+
+
 def parse_handwriting_diagnosis(raw_text):
     """verify_transcribed_solution()의 'DIAGNOSIS: .../HINT: ...' 2줄 출력을 분리한다.
 
@@ -2927,6 +3075,12 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
 
     st.caption(caption_text)
 
+    # log_student_question()의 DB 저장 결과(디버그 카드) - st.rerun() 이후에도 사라지지
+    # 않도록 세션 상태에 저장된 값을 매번 다시 그린다. 로깅은 오답 첨삭에서만 일어나므로
+    # 질문 클리닉 탭에는 띄우지 않는다.
+    if with_solution_uploader:
+        render_last_save_status_debug_card()
+
     messages_key = f"{state_prefix}_messages"
     upload_key_key = f"{state_prefix}_last_upload_key"
     system_prompt = load_system_prompt(st.session_state.student_grade)
@@ -2958,15 +3112,16 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
 
             st.caption("💡 tip: 연필선이 선명할수록, 그림자가 지지 않게 수직으로 찍을수록 AI가 더 정확하게 읽어요!")
 
+            # 등록된 정석 해설 DB와 대조 검증을 하려면 어느 교재인지 알아야 한다 -
+            # 일치하는 문제가 없으면 조용히 기존 자유형식/하이브리드 추론 방식으로
+            # 전환된다(verify_transcribed_solution/get_problem_solution 참고).
+            registered_book_titles = sorted({
+                row.get("book_title") for row in list_registered_problems() if row.get("book_title")
+            })
+            if "쎈 중3-2" not in registered_book_titles:
+                registered_book_titles.insert(0, "쎈 중3-2")
+
             if st.session_state.upload_mode == "dual":
-                # 등록된 정석 해설 DB와 대조 검증을 하려면 어느 교재/몇 번 문제인지 알아야
-                # 한다 - 일치하는 문제가 없으면 2단계 검증이 조용히 기존 하이브리드
-                # 추론 방식으로 전환된다(verify_transcribed_solution 참고).
-                registered_book_titles = sorted({
-                    row.get("book_title") for row in list_registered_problems() if row.get("book_title")
-                })
-                if "쎈 중3-2" not in registered_book_titles:
-                    registered_book_titles.insert(0, "쎈 중3-2")
                 pick_c1, pick_c2 = st.columns(2)
                 with pick_c1:
                     selected_book_title = st.selectbox(
@@ -2987,6 +3142,11 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                         "2️⃣ 연습장 풀이 사진", type=["jpg", "jpeg", "png"], key=f"{state_prefix}_sol"
                     )
             else:
+                # 1장 모드는 문제 번호를 직접 입력받지 않는다 - 사진 속 인쇄된 번호를
+                # Vision으로 자동 감지해서 DB와 매칭한다(아래 detect_problem_code 참고).
+                selected_book_title = st.selectbox(
+                    "📖 교재", registered_book_titles, key=f"{state_prefix}_book_title_select_single"
+                )
                 uploaded_problem = st.file_uploader(
                     "📷 문제집에 바로 풀어놓은 사진", type=["jpg", "jpeg", "png"], key=f"{state_prefix}_prob"
                 )
@@ -3060,28 +3220,97 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                     s_bytes, p_bytes, uploaded_problem.type, images_submitted, label, api_text, draft_key,
                     book_title=selected_book_title, problem_code=selected_problem_code,
                 )
+        elif with_solution_uploader:
+            # "📖 문제집에 바로 풀었어요"(1장 모드) - 사진 속 인쇄된 문제 번호를 먼저
+            # Vision으로 감지해서, DB(problem_solutions)에 등록된 정석 해설이 있으면
+            # 그걸 '바이블'로 대조 검증하고, 없으면 기존 자유형식 Vision 첨삭으로
+            # 조용히 전환한다.
+            send_telegram_photo(p_bytes, st.session_state.student_name, f"{mode} - 문제")
+
+            with st.spinner("사진 속 문제 번호를 확인하는 중입니다..."):
+                detected_code = detect_problem_code(p_bytes, uploaded_problem.type)
+            db_problem = get_problem_solution(selected_book_title, detected_code) if detected_code else None
+
+            images_submitted = [{"bytes": p_bytes, "mime": uploaded_problem.type}]
+            label = "📷 문제 사진을 올렸어요!"
+
+            try:
+                if db_problem:
+                    st.caption(f"📚 문제 {detected_code}번 - 등록된 정석 해설({selected_book_title})과 대조했어요.")
+                    reference_solution = format_reference_solution(db_problem)
+                    api_text = (
+                        f"[모드: {mode} / 과목: {st.session_state.student_grade}] 등록된 정석 해설과 대조해서 "
+                        f"문제 {detected_code}번 손글씨 풀이를 검증했어."
+                    )
+                    with st.spinner("등록된 정석 해설과 대조하며 풀이를 검증하는 중입니다..."):
+                        raw_diagnosis = verify_image_against_reference(
+                            p_bytes, uploaded_problem.type, reference_solution, st.session_state.student_grade,
+                        )
+                    diagnosis, hint, parsed_ok = parse_handwriting_diagnosis(raw_diagnosis)
+                    if not parsed_ok:
+                        bot_reply = diagnosis or "(빈 응답)"
+                    else:
+                        bot_reply = f"🔍 **진단 결과:** {diagnosis}"
+                        if hint:
+                            bot_reply += f"\n\n💡 **다혜T의 역질문 힌트:** {hint}"
+                    log_label = "풀이 검토 사진 제출(DB 대조)"
+                else:
+                    # 번호를 못 찾았거나(detected_code == "") DB에 등록된 해설이 없는 경우 -
+                    # 기존처럼 단일 Vision 호출로 자유형식 첨삭을 돌려준다.
+                    api_text = (
+                        f"[모드: {mode} / 과목: {st.session_state.student_grade}] 이 사진 안의 손글씨 풀이를 첫 줄부터 "
+                        "줄 단위로 검증하여 잘한 점과 연산 실수가 발생한 정확한 위치를 콕 짚어라."
+                    )
+                    content_blocks = [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": uploaded_problem.type,
+                                "data": base64.b64encode(p_bytes).decode("utf-8"),
+                            },
+                        },
+                        {"type": "text", "text": api_text},
+                    ]
+                    with st.spinner("손글씨 풀이를 줄 단위로 분석하는 중입니다..."):
+                        response = anthropic.Anthropic(api_key=api_key).messages.create(
+                            model=MODEL_NAME,
+                            max_tokens=2000,
+                            system=system_prompt,
+                            messages=[{"role": "user", "content": content_blocks}],
+                        )
+                    bot_reply = get_response_text(response)
+                    log_label = "풀이 검토 사진 제출"
+
+                # 감지된 문제 번호(DB 매칭 여부와 무관하게)를 그대로 저장해야 선생님
+                # 대시보드에서 "몇 번 문제 첨삭 기록인지"가 바로 보인다.
+                log_student_question(detected_code, p_bytes, "", bot_reply)
+
+                # 사진 제출 자체도 대화 기록에 남겨서 새로고침 후에도 사진 내역이 보이게 한다.
+                st.session_state[messages_key].append({
+                    "role": "user",
+                    "content": label,
+                    "images": images_submitted,
+                    "api_text": api_text,
+                })
+                st.session_state[messages_key].append({"role": "assistant", "content": bot_reply})
+                log_to_slack_and_gsheet(
+                    st.session_state.student_name, st.session_state.student_grade, mode, log_label, bot_reply,
+                    skip_telegram=True,
+                )
+                upsert_question_archive_entry(state_prefix, feature_label, messages_key)
+                persist_current_student()
+                st.rerun()
+            except Exception as e:
+                show_friendly_error(e)
         else:
-            client = anthropic.Anthropic(api_key=api_key)
-
-            if with_solution_uploader:
-                # 풀이 사진 없이 문제 사진만 올라온 경우 - 기존처럼 단일 Vision 호출로 처리한다.
-                send_telegram_photo(p_bytes, st.session_state.student_name, f"{mode} - 문제")
-                api_text = (
-                    f"[모드: {mode} / 과목: {st.session_state.student_grade}] 이 사진 안의 손글씨 풀이를 첫 줄부터 "
-                    "줄 단위로 검증하여 잘한 점과 연산 실수가 발생한 정확한 위치를 콕 짚어라."
-                )
-                spinner_text = "손글씨 풀이를 줄 단위로 분석하는 중입니다..."
-                log_label = "풀이 검토 사진 제출"
-            else:
-                send_telegram_photo(p_bytes, st.session_state.student_name, mode)
-                api_text = (
-                    f"[모드: {mode} / 과목: {st.session_state.student_grade}] 먼저 1단계로 "
-                    "[과목 > 대단원 > 중단원 > 세부 대표유형명] 4단계로 세부 출제 유형을 밝히고, 인식한 조건이나 각도를 "
-                    "먼저 확인한 뒤 2단계 힌트 질문을 던져라."
-                )
-                spinner_text = "문제를 꼼꼼하게 살피는 중입니다..."
-                log_label = "문제 사진 업로드 제출"
-
+            # "❓ 질문 클리닉" - 문제 사진 1장만 받아 정답을 주지 않고 유도 질문을 던진다.
+            send_telegram_photo(p_bytes, st.session_state.student_name, mode)
+            api_text = (
+                f"[모드: {mode} / 과목: {st.session_state.student_grade}] 먼저 1단계로 "
+                "[과목 > 대단원 > 중단원 > 세부 대표유형명] 4단계로 세부 출제 유형을 밝히고, 인식한 조건이나 각도를 "
+                "먼저 확인한 뒤 2단계 힌트 질문을 던져라."
+            )
             content_blocks = [
                 {
                     "type": "image",
@@ -3096,28 +3325,15 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
             images_submitted = [{"bytes": p_bytes, "mime": uploaded_problem.type}]
             label = "📷 문제 사진을 올렸어요!"
 
-            with st.spinner(spinner_text):
+            with st.spinner("문제를 꼼꼼하게 살피는 중입니다..."):
                 try:
-                    response = client.messages.create(
+                    response = anthropic.Anthropic(api_key=api_key).messages.create(
                         model=MODEL_NAME,
                         max_tokens=2000,
                         system=system_prompt,
                         messages=[{"role": "user", "content": content_blocks}],
                     )
                     bot_reply = get_response_text(response)
-
-                    # 오답 첨삭(문제+풀이가 한 장에 같이 있는 '문제집에 바로 풀었어요' 모드)도
-                    # 손글씨 풀이 첨삭 기록이므로, Mathpix+Quick-Edit 경로와 똑같이 무조건
-                    # student_questions에 남긴다. 이 모드는 별도 OCR 텍스트/문제번호 선택
-                    # 단계가 없으므로 그 두 칼럼은 빈 값으로 둔다.
-                    if with_solution_uploader:
-                        log_ok, log_err = log_student_question("", p_bytes, "", bot_reply)
-                        if log_ok:
-                            st.toast("✅ 질문 기록이 선생님 대시보드에 저장되었습니다.")
-                        else:
-                            st.toast(f"⚠️ 첨삭 기록 저장 실패: {log_err}", icon="⚠️")
-
-                    # 사진 제출 자체도 대화 기록에 남겨서 새로고침 후에도 사진 내역이 보이게 한다.
                     st.session_state[messages_key].append({
                         "role": "user",
                         "content": label,
@@ -3126,7 +3342,7 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                     })
                     st.session_state[messages_key].append({"role": "assistant", "content": bot_reply})
                     log_to_slack_and_gsheet(
-                        st.session_state.student_name, st.session_state.student_grade, mode, log_label, bot_reply,
+                        st.session_state.student_name, st.session_state.student_grade, mode, "문제 사진 업로드 제출", bot_reply,
                         skip_telegram=True,
                     )
                     upsert_question_archive_entry(state_prefix, feature_label, messages_key)
@@ -3245,22 +3461,13 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
 
                 # 최종 피드백(verify_transcribed_solution 결과)이 나온 직후, 선생님
                 # 대시보드가 바로 훑어볼 수 있게 구조화된 로그(student_questions)를
-                # 무조건 남긴다 - 화면에 보여주는 것과 별개로 반드시 DB에도 적재되도록,
-                # 호출 결과(성공/실패)를 받아서 바로 st.toast로 알려준다.
-                log_problem_code = draft.get("problem_code") or ""
-                log_image_bytes = draft.get("solution_image_bytes")
-                log_ocr_text = edited_text or ""
-                log_ai_feedback = feedback_text or ""
-                log_ok, log_err = log_student_question(
-                    log_problem_code, log_image_bytes, log_ocr_text, log_ai_feedback,
+                # 무조건 남긴다. 화면 표시(디버그 카드)는 log_student_question()이
+                # st.session_state["last_save_status"]에 적어두고,
+                # render_last_save_status_debug_card()가 다음 실행에서 그려준다.
+                log_student_question(
+                    draft.get("problem_code") or "", draft.get("solution_image_bytes"),
+                    edited_text or "", feedback_text or "",
                 )
-                if log_ok:
-                    st.toast("✅ 질문 기록이 선생님 대시보드에 저장되었습니다.")
-                else:
-                    # 바로 뒤에 st.rerun()이 있어 일반 st.warning은 화면에 제대로 안 보일 수
-                    # 있다(리런 전 화면이 바로 지워짐) - st.toast는 리런 후에도 떠 있도록
-                    # Streamlit이 보장해주는 알림이라 실패도 이걸로 띄운다.
-                    st.toast(f"⚠️ 첨삭 기록 저장 실패: {log_err}", icon="⚠️")
 
                 st.session_state[messages_key].append({
                     "role": "user",
