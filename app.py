@@ -576,11 +576,15 @@ def log_student_question(problem_code, image_bytes, ocr_text, ai_feedback):
 
     풀이 사진은 Storage 버킷(STUDENT_UPLOADS_BUCKET)에 올려 공개 URL을 같이
     저장한다. Storage 업로드가 실패해도(버킷/권한 문제 등) image_url만 빈 문자열로
-    두고 텍스트 기록은 계속 남긴다 - 이 로깅이 실패해도 학생에게 이미 보여준
-    첨삭 결과(화면)에는 전혀 영향이 없어야 하므로 예외를 전부 조용히 삼킨다.
+    두고 텍스트 insert는 계속 시도한다.
+
+    돌려주는 값: (성공 여부, 에러 메시지). DB insert 실패는 더 이상 조용히 삼키지
+    않는다 - student_questions 테이블이 아직 생성되지 않았거나(42P01) 권한 문제가
+    있을 때 "저장은 실패했는데 화면엔 아무 신호도 없는" 상태를 막기 위해, 호출하는
+    쪽(Quick-Edit 확정 버튼)이 이 결과를 보고 st.toast로 바로 알려준다.
     """
     if not supabase:
-        return
+        return False, "Supabase 연결 정보(SUPABASE_URL/SUPABASE_SERVICE_KEY)가 설정되지 않았습니다."
     kakao_id = st.session_state.get("kakao_id")
 
     image_url = ""
@@ -595,19 +599,20 @@ def log_student_question(problem_code, image_bytes, ocr_text, ai_feedback):
         )
         image_url = supabase.storage.from_(STUDENT_UPLOADS_BUCKET).get_public_url(path)
     except Exception:
-        image_url = ""
+        image_url = ""  # 이미지 업로드는 부가 기능 - 실패해도 텍스트 기록은 계속 남긴다
 
     try:
         supabase.table("student_questions").insert({
             "kakao_id": kakao_id,
-            "student_name": st.session_state.get("student_name", ""),
-            "problem_code": problem_code,
+            "student_name": st.session_state.get("student_name") or "",
+            "problem_code": problem_code or "",
             "image_url": image_url,
-            "ocr_text": ocr_text,
-            "ai_feedback": ai_feedback,
+            "ocr_text": ocr_text or "",
+            "ai_feedback": ai_feedback or "",
         }).execute()
-    except Exception:
-        pass
+        return True, ""
+    except Exception as e:
+        return False, str(e)
 
 
 def _embedded_user(row):
@@ -3226,12 +3231,24 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                         feedback_text += f"\n\n💡 **다혜T의 역질문 힌트:** {hint}"
                 bot_reply = f"📝 **판독된 풀이 과정**\n\n{edited_text}\n\n---\n\n{feedback_text}"
 
-                # 최종 피드백이 나온 직후, 선생님 대시보드가 바로 훑어볼 수 있게 구조화된
-                # 로그(student_questions)를 무조건 남긴다 - Storage/DB 중 하나가 실패해도
-                # 이 로깅 자체가 학생에게 보여줄 첨삭 결과에 영향을 주면 안 된다.
-                log_student_question(
-                    draft.get("problem_code", ""), draft["solution_image_bytes"], edited_text, feedback_text,
+                # 최종 피드백(verify_transcribed_solution 결과)이 나온 직후, 선생님
+                # 대시보드가 바로 훑어볼 수 있게 구조화된 로그(student_questions)를
+                # 무조건 남긴다 - 화면에 보여주는 것과 별개로 반드시 DB에도 적재되도록,
+                # 호출 결과(성공/실패)를 받아서 바로 st.toast로 알려준다.
+                log_problem_code = draft.get("problem_code") or ""
+                log_image_bytes = draft.get("solution_image_bytes")
+                log_ocr_text = edited_text or ""
+                log_ai_feedback = feedback_text or ""
+                log_ok, log_err = log_student_question(
+                    log_problem_code, log_image_bytes, log_ocr_text, log_ai_feedback,
                 )
+                if log_ok:
+                    st.toast("✅ 질문 기록이 선생님 대시보드에 저장되었습니다.")
+                else:
+                    # 바로 뒤에 st.rerun()이 있어 일반 st.warning은 화면에 제대로 안 보일 수
+                    # 있다(리런 전 화면이 바로 지워짐) - st.toast는 리런 후에도 떠 있도록
+                    # Streamlit이 보장해주는 알림이라 실패도 이걸로 띄운다.
+                    st.toast(f"⚠️ 첨삭 기록 저장 실패: {log_err}", icon="⚠️")
 
                 st.session_state[messages_key].append({
                     "role": "user",
