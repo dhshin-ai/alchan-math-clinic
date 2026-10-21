@@ -3105,6 +3105,18 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                         messages=[{"role": "user", "content": content_blocks}],
                     )
                     bot_reply = get_response_text(response)
+
+                    # 오답 첨삭(문제+풀이가 한 장에 같이 있는 '문제집에 바로 풀었어요' 모드)도
+                    # 손글씨 풀이 첨삭 기록이므로, Mathpix+Quick-Edit 경로와 똑같이 무조건
+                    # student_questions에 남긴다. 이 모드는 별도 OCR 텍스트/문제번호 선택
+                    # 단계가 없으므로 그 두 칼럼은 빈 값으로 둔다.
+                    if with_solution_uploader:
+                        log_ok, log_err = log_student_question("", p_bytes, "", bot_reply)
+                        if log_ok:
+                            st.toast("✅ 질문 기록이 선생님 대시보드에 저장되었습니다.")
+                        else:
+                            st.toast(f"⚠️ 첨삭 기록 저장 실패: {log_err}", icon="⚠️")
+
                     # 사진 제출 자체도 대화 기록에 남겨서 새로고침 후에도 사진 내역이 보이게 한다.
                     st.session_state[messages_key].append({
                         "role": "user",
