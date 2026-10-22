@@ -568,10 +568,12 @@ STUDENT_UPLOADS_BUCKET = "student_uploads"
 
 
 def log_student_question(problem_code, image_bytes, ocr_text, ai_feedback):
-    """'🔍 오답 첨삭'에서 첨삭 결과(진단/피드백)가 나올 때마다 - Quick-Edit 확정이든
-    1장짜리 단일 호출이든 - student_questions에 1건을 남긴다. 선생님 대시보드가
-    문제번호/OCR 텍스트/AI 피드백을 구조화된 형태로 바로 훑어볼 수 있게 chat_history
-    (대화 전체를 messages jsonb로 담는 범용 로그)와는 별도로 두는 전용 로그다.
+    """학생과의 질문/첨삭 왕복이 끝날 때마다 student_questions에 1건을 남긴다 - '🔍 오답
+    첨삭'의 Quick-Edit 확정/1장짜리 단일 호출뿐 아니라, '❓ 질문 클리닉'의 텍스트
+    채팅 답변(이미지 없음, problem_code="일반질문")도 같은 파이프라인을 그대로 쓴다.
+    선생님 대시보드가 문제번호/질문 내용/AI 피드백을 구조화된 형태로 바로 훑어볼 수
+    있게 chat_history(대화 전체를 messages jsonb로 담는 범용 로그)와는 별도로 두는
+    전용 로그다. image_bytes가 없으면(텍스트만 있는 질문) Storage 업로드를 건너뛴다.
 
     st.toast처럼 rerun 타이밍에 사라질 수 있는 위젯에 의존하지 않는다 - 단계별 진행
     상황을 st.session_state["last_save_status"]에 전부 적어 두고, 호출부가 rerun을
@@ -598,20 +600,25 @@ def log_student_question(problem_code, image_bytes, ocr_text, ai_feedback):
     kakao_id = st.session_state.get("kakao_id")
 
     image_url = ""
-    try:
+    if not image_bytes:
+        # '❓ 질문 클리닉'의 텍스트 전용 대화처럼 사진이 없는 기록도 있다 - Storage
+        # 업로드를 시도할 대상이 없으므로 조용히 건너뛴다(에러 아님).
+        _step(True, "이미지 없음 - Storage 업로드 생략")
+    else:
         try:
-            supabase.storage.create_bucket(STUDENT_UPLOADS_BUCKET, options={"public": True})
-        except Exception:
-            pass  # 이미 존재하거나 권한이 없으면 업로드 시도에서 자연히 드러난다
-        path = f"{kakao_id or 'anonymous'}/{uuid.uuid4()}.jpg"
-        supabase.storage.from_(STUDENT_UPLOADS_BUCKET).upload(
-            path, image_bytes, file_options={"content-type": "image/jpeg"}
-        )
-        image_url = supabase.storage.from_(STUDENT_UPLOADS_BUCKET).get_public_url(path)
-        _step(True, f"풀이 사진 Storage 업로드 성공 ({path})")
-    except Exception as e:
-        image_url = ""  # 이미지 업로드는 부가 기능 - 실패해도 텍스트 기록은 계속 남긴다
-        _step(False, f"풀이 사진 Storage 업로드 실패(텍스트 기록은 계속 진행): {e}")
+            try:
+                supabase.storage.create_bucket(STUDENT_UPLOADS_BUCKET, options={"public": True})
+            except Exception:
+                pass  # 이미 존재하거나 권한이 없으면 업로드 시도에서 자연히 드러난다
+            path = f"{kakao_id or 'anonymous'}/{uuid.uuid4()}.jpg"
+            supabase.storage.from_(STUDENT_UPLOADS_BUCKET).upload(
+                path, image_bytes, file_options={"content-type": "image/jpeg"}
+            )
+            image_url = supabase.storage.from_(STUDENT_UPLOADS_BUCKET).get_public_url(path)
+            _step(True, f"풀이 사진 Storage 업로드 성공 ({path})")
+        except Exception as e:
+            image_url = ""  # 이미지 업로드는 부가 기능 - 실패해도 텍스트 기록은 계속 남긴다
+            _step(False, f"풀이 사진 Storage 업로드 실패(텍스트 기록은 계속 진행): {e}")
 
     try:
         insert_res = supabase.table("student_questions").insert({
@@ -1247,43 +1254,45 @@ def render_teacher_dashboard():
 
     st.markdown("---")
 
-    st.markdown("#### 📝 손글씨 풀이 첨삭 기록 (최신순)")
-    st.caption("'🔍 오답 첨삭'에서 Quick-Edit을 확정해 받은 진단/힌트가 문항 단위로 쌓여요.")
+    st.markdown("#### 📝 학생 질문/첨삭 기록 (최신순)")
+    st.caption(
+        "'🔍 오답 첨삭'의 손글씨 진단/힌트와 '❓ 질문 클리닉'의 텍스트 질문·답변이 "
+        "문항 단위로 함께 쌓여요."
+    )
     sq_ok, sq_rows, sq_err = fetch_student_questions()
     if not sq_ok:
-        show_friendly_error(sq_err, "😥 손글씨 풀이 첨삭 기록을 불러오는 중 문제가 생겼어요.")
+        show_friendly_error(sq_err, "😥 학생 질문/첨삭 기록을 불러오는 중 문제가 생겼어요.")
     elif not sq_rows:
-        st.info("아직 등록된 손글씨 풀이 첨삭 기록이 없습니다.")
+        st.info("아직 등록된 질문/첨삭 기록이 없습니다.")
     else:
-        st.caption(f"총 {len(sq_rows)}건")
-        st.dataframe(
-            [
-                {
-                    "학생": row.get("student_name") or "익명 학생",
-                    "문제번호": row.get("problem_code") or "-",
-                    "시각": _iso_to_kst_label(row.get("created_at")),
-                    "AI 피드백": (
-                        (row.get("ai_feedback") or "")[:50] + "…"
-                        if len(row.get("ai_feedback") or "") > 50 else (row.get("ai_feedback") or "-")
-                    ),
-                }
-                for row in sq_rows
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
+        general_count = sum(1 for row in sq_rows if _is_general_question(row))
+        st.caption(f"총 {len(sq_rows)}건 (🔍 오답 첨삭 {len(sq_rows) - general_count}건 · 💬 일반 질문 {general_count}건)")
+        table_rows = []
+        for row in sq_rows:
+            feature_label, problem_label = _format_student_question_labels(row)
+            table_rows.append({
+                "구분": feature_label,
+                "학생": row.get("student_name") or "익명 학생",
+                "문제번호": problem_label,
+                "시각": _iso_to_kst_label(row.get("created_at")),
+                "AI 피드백": (
+                    (row.get("ai_feedback") or "")[:50] + "…"
+                    if len(row.get("ai_feedback") or "") > 50 else (row.get("ai_feedback") or "-")
+                ),
+            })
+        st.dataframe(table_rows, use_container_width=True, hide_index=True)
 
-        st.markdown("##### 🔍 문항별 상세 보기 (사진·OCR 텍스트·AI 피드백)")
+        st.markdown("##### 🔍 문항별 상세 보기 (사진·질문 내용·AI 답변)")
         for row in sq_rows:
             student = row.get("student_name") or "익명 학생"
-            problem_code = row.get("problem_code") or "-"
+            feature_label, problem_label = _format_student_question_labels(row)
             created_label = _iso_to_kst_label(row.get("created_at"))
-            with st.expander(f"👤 {student} · 문제 {problem_code} · {created_label}"):
+            with st.expander(f"👤 {student} · {feature_label} · {problem_label} · {created_label}"):
                 if row.get("image_url"):
                     st.image(row["image_url"], width=280)
-                st.markdown("**📝 OCR 텍스트**")
+                st.markdown("**🙋 질문 내용**" if _is_general_question(row) else "**📝 OCR 텍스트**")
                 st.code(row.get("ocr_text") or "-")
-                st.markdown("**🤖 AI 피드백**")
+                st.markdown("**🤖 AI 답변**" if _is_general_question(row) else "**🤖 AI 피드백**")
                 st.markdown(row.get("ai_feedback") or "-")
 
     st.markdown("---")
@@ -2049,6 +2058,26 @@ def _render_clinic_message(msg):
             st.markdown(msg["content"])
 
 
+GENERAL_QUESTION_PROBLEM_CODE = "일반질문"
+
+
+def _is_general_question(row):
+    """student_questions 행이 '🔍 오답 첨삭'의 손글씨 첨삭이 아니라 '❓ 질문 클리닉'의
+    텍스트 질문인지 구분한다 (log_student_question이 problem_code="일반질문"으로
+    남긴 행)."""
+    return (row.get("problem_code") or "") == GENERAL_QUESTION_PROBLEM_CODE
+
+
+def _format_student_question_labels(row):
+    """student_questions 행 1건을 (기능 라벨, 문제 라벨) 표시용 문자열로 바꾼다 -
+    마이페이지 오답노트와 선생님 대시보드가 같은 표기를 쓰도록 한곳에 모아 둔다."""
+    if _is_general_question(row):
+        return "❓ 질문 클리닉", "💬 일반 질문"
+    problem_code = row.get("problem_code")
+    problem_label = f"문제 {problem_code}번" if problem_code else "문제 번호 미인식"
+    return "🔍 오답 첨삭", problem_label
+
+
 def render_question_archive_cards():
     """'👤 마이페이지 > 📝 오답노트' - student_questions을 Supabase에서 직접 조회해
     날짜별로 묶어 보여준다.
@@ -2083,7 +2112,10 @@ def render_question_archive_cards():
         return
 
     if not rows:
-        st.info("아직 저장된 첨삭 기록이 없어요. '🔍 오답 첨삭'에서 사진을 올리면 여기에 차곡차곡 쌓여요!")
+        st.info(
+            "아직 저장된 기록이 없어요. '🔍 오답 첨삭'에서 사진을 올리거나 '❓ 질문 클리닉'에서 "
+            "질문을 주고받으면 여기에 차곡차곡 쌓여요!"
+        )
         return
 
     by_date = {}
@@ -2094,15 +2126,15 @@ def render_question_archive_cards():
     for date_key in sorted(by_date.keys(), reverse=True):
         st.markdown(f"#### 🗓️ {date_key}")
         for row in by_date[date_key]:
-            problem_label = f"문제 {row['problem_code']}번" if row.get("problem_code") else "문제 번호 미인식"
+            feature_label, problem_label = _format_student_question_labels(row)
             created_label = _iso_to_kst_label(row.get("created_at"))
-            with st.expander(f"🔍 오답 첨삭 · {problem_label} · {created_label}"):
+            with st.expander(f"{feature_label} · {problem_label} · {created_label}"):
                 if row.get("image_url"):
                     st.image(row["image_url"], width=280)
                 if row.get("ocr_text"):
-                    st.markdown("**📝 판독된 풀이**")
+                    st.markdown("**🙋 학생 질문**" if _is_general_question(row) else "**📝 판독된 풀이**")
                     st.code(row["ocr_text"])
-                st.markdown("**🤖 다혜T의 첨삭**")
+                st.markdown("**🤖 다혜T의 답변**" if _is_general_question(row) else "**🤖 다혜T의 첨삭**")
                 st.markdown(row.get("ai_feedback") or "-")
 
 
@@ -3662,6 +3694,15 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                         last_student_text, bot_reply,
                     )
                     upsert_question_archive_entry(state_prefix, feature_label, messages_key)
+
+                    # '❓ 질문 클리닉'의 텍스트 답변도 '🔍 오답 첨삭'과 동일한
+                    # student_questions 파이프라인에 남긴다 - 이미지가 없는 질문이므로
+                    # image_bytes=None(Storage 업로드 생략), problem_code="일반질문"으로
+                    # 구분한다. 오답 첨삭의 후속 힌트 대화(이 코드를 같이 쓴다)는 첨삭
+                    # 시작 시점에 이미 한 번 기록되므로 여기서는 중복 기록하지 않는다.
+                    if not with_solution_uploader:
+                        log_student_question("일반질문", None, last_student_text, bot_reply)
+
                     persist_current_student()
                     st.rerun()
                 except Exception as e:
