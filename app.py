@@ -1029,33 +1029,31 @@ def render_teacher_dashboard():
     )
 
     # ==========================================
-    # 🛠️ DB 통신 상태 점검 - 사이드바는 UI 문제로 접근이 어려워 여기(대시보드 최상단)로
-    # 옮겼다. student_questions에 더미 데이터를 직접 insert해서 Supabase 연결/쓰기가
-    # 실제로 되는지 즉시 확인하는 디버그 버튼 - 성공/실패 어느 쪽이든 원문을 그대로
-    # 보여주고, 절대 조용히 넘어가지 않는다.
+    # 🛠️ DB 통신 상태 점검 - Supabase 연결/쓰기 정상 동작이 이미 확인됐으므로 평소에는
+    # 접어 두고, 나중에 다시 의심스러울 때만 펼쳐서 바로 재확인할 수 있게 둔다.
     # ==========================================
-    st.markdown("### 🛠️ DB 통신 상태 점검")
-    if st.button(
-        "🚨 DB 강제 연결 및 쓰기 테스트 (student_questions)",
-        type="primary",
-        key="teacher_db_force_test_btn",
-    ):
-        if not supabase:
-            st.error("🚨 Supabase Client 객체가 None입니다. Secrets 설정을 확인하세요.")
-        else:
-            try:
-                res = (
-                    supabase.table("student_questions")
-                    .insert({
-                        "problem_code": "TEST-000",
-                        "ai_feedback": "선생님 모드 직접 테스트",
-                        "ocr_text": "연결 확인",
-                    })
-                    .execute()
-                )
-                st.success(f"✅ DB 쓰기 성공! 반환 데이터: {res.data}")
-            except Exception as e:
-                st.error(f"❌ DB 통신 실패 에러 원문:\n{repr(e)}")
+    with st.expander("🛠️ DB 통신 상태 점검 (문제 있을 때만 펼쳐서 확인)"):
+        if st.button(
+            "🚨 DB 강제 연결 및 쓰기 테스트 (student_questions)",
+            type="primary",
+            key="teacher_db_force_test_btn",
+        ):
+            if not supabase:
+                st.error("🚨 Supabase Client 객체가 None입니다. Secrets 설정을 확인하세요.")
+            else:
+                try:
+                    res = (
+                        supabase.table("student_questions")
+                        .insert({
+                            "problem_code": "TEST-000",
+                            "ai_feedback": "선생님 모드 직접 테스트",
+                            "ocr_text": "연결 확인",
+                        })
+                        .execute()
+                    )
+                    st.success(f"✅ DB 쓰기 성공! 반환 데이터: {res.data}")
+                except Exception as e:
+                    st.error(f"❌ DB 통신 실패 에러 원문:\n{repr(e)}")
 
     st.markdown("---")
 
