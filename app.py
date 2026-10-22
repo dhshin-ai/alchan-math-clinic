@@ -677,32 +677,6 @@ def _embedded_user(row):
     return nested or {}
 
 
-def fetch_all_chat_history():
-    """선생님 대시보드용: chat_history를 users와 조인해서 최신순(내림차순)으로 불러온다.
-
-    '데이터 0건'과 '조회 자체가 실패함'을 구분해야 하므로 (성공 여부, 행 목록, 에러 메시지)
-    튜플로 돌려준다. 과거에는 모든 실패를 조용히 빈 리스트로 뭉개서(except: return []),
-    실제 쿼리/권한 오류가 나도 '학생 질문이 0건'인 것처럼 보이는 문제가 있었다.
-
-    users(nickname)만 조인한다 - student_grade는 실제 Supabase users 테이블에 그
-    컬럼이 없어서(42703 column does not exist) 조인에 넣으면 PostgREST가 요청 전체를
-    거부한다. '질문/첨삭' 과목 선택은 이제 세션에만 있는 값이라 DB 조인으로는 복원할
-    수 없다 - persist_current_student()도 더는 그 컬럼에 쓰지 않는다.
-    """
-    if not supabase:
-        return False, [], "Supabase 연결 정보(SUPABASE_URL/SUPABASE_SERVICE_KEY)가 설정되지 않았습니다."
-    try:
-        res = (
-            supabase.table("chat_history")
-            .select("*, users(nickname)")
-            .order("created_at", desc=True)
-            .execute()
-        )
-        return True, (res.data or []), ""
-    except Exception as e:
-        return False, [], str(e)
-
-
 def fetch_student_questions():
     """선생님 대시보드용: student_questions(손글씨 풀이 첨삭 전용 구조화 로그)를
     최신순으로 불러온다.
@@ -723,6 +697,60 @@ def fetch_student_questions():
         return True, (res.data or []), ""
     except Exception as e:
         return False, [], str(e)
+
+
+def render_student_questions_dashboard_section():
+    """선생님 대시보드의 메인 섹션 - student_questions(🔍 오답 첨삭 + ❓ 질문 클리닉
+    통합 로그)를 최신순으로 보여준다.
+
+    총 건수/오답 첨삭/일반 질문 통계를 표 위에 st.metric 뱃지로 먼저 띄워서, 대시보드에
+    들어오는 순간 바로 한눈에 들어오게 한다(_is_general_question/_format_student_question_labels
+    로 두 종류를 구분).
+    """
+    sq_ok, sq_rows, sq_err = fetch_student_questions()
+    if not sq_ok:
+        show_friendly_error(sq_err, "😥 학생 질문/첨삭 기록을 불러오는 중 문제가 생겼어요.")
+        return
+    if not sq_rows:
+        st.info("아직 등록된 질문/첨삭 기록이 없습니다.")
+        return
+
+    general_count = sum(1 for row in sq_rows if _is_general_question(row))
+    review_count = len(sq_rows) - general_count
+
+    metric_c1, metric_c2, metric_c3 = st.columns(3)
+    metric_c1.metric("📊 총 기록", f"{len(sq_rows)}건")
+    metric_c2.metric("🔍 오답 첨삭", f"{review_count}건")
+    metric_c3.metric("💬 일반 질문", f"{general_count}건")
+
+    st.markdown("#### 📝 학생 질문/첨삭 기록 (최신순)")
+    table_rows = []
+    for row in sq_rows:
+        feature_label, problem_label = _format_student_question_labels(row)
+        table_rows.append({
+            "구분": feature_label,
+            "학생": row.get("student_name") or "익명 학생",
+            "문제번호": problem_label,
+            "시각": _iso_to_kst_label(row.get("created_at")),
+            "AI 피드백": (
+                (row.get("ai_feedback") or "")[:50] + "…"
+                if len(row.get("ai_feedback") or "") > 50 else (row.get("ai_feedback") or "-")
+            ),
+        })
+    st.dataframe(table_rows, use_container_width=True, hide_index=True)
+
+    st.markdown("##### 🔍 문항별 상세 보기 (사진·질문 내용·AI 답변)")
+    for row in sq_rows:
+        student = row.get("student_name") or "익명 학생"
+        feature_label, problem_label = _format_student_question_labels(row)
+        created_label = _iso_to_kst_label(row.get("created_at"))
+        with st.expander(f"👤 {student} · {feature_label} · {problem_label} · {created_label}"):
+            if row.get("image_url"):
+                st.image(row["image_url"], width=280)
+            st.markdown("**🙋 질문 내용**" if _is_general_question(row) else "**📝 OCR 텍스트**")
+            st.code(row.get("ocr_text") or "-")
+            st.markdown("**🤖 AI 답변**" if _is_general_question(row) else "**🤖 AI 피드백**")
+            st.markdown(row.get("ai_feedback") or "-")
 
 
 SOLUTION_CONVERTER_SYSTEM_PROMPT = (
@@ -1076,6 +1104,10 @@ def render_teacher_dashboard():
 
     st.markdown("---")
 
+    render_student_questions_dashboard_section()
+
+    st.markdown("---")
+
     st.markdown("#### 🚀 오늘의 개념 PASS 출제")
     st.caption("학년을 고르고 미션 내용을 입력한 뒤 출제하면, 학생들이 찍고 들어올 QR코드가 바로 아래에 뜹니다.")
 
@@ -1190,110 +1222,6 @@ def render_teacher_dashboard():
                 "QR코드 생성 라이브러리(qrcode)가 아직 이 환경에 설치되지 않았어요. "
                 f"학생들에게 이 주소를 직접 알려주세요 → {qr_url}"
             )
-
-    st.markdown("---")
-
-    st.markdown("#### 📨 전체 질문/첨삭 기록 (최신순)")
-    chat_ok, chat_rows, chat_err = fetch_all_chat_history()
-    if not chat_ok:
-        show_friendly_error(chat_err, "😥 학생 질문 기록을 불러오는 중 문제가 생겼어요.")
-    elif not chat_rows:
-        st.info("아직 등록된 학생 질문이 없습니다.")
-    else:
-        st.caption(f"총 {len(chat_rows)}건의 질문/첨삭 기록이 있습니다.")
-
-        def _render_msg_list(msg_list):
-            for msg in msg_list:
-                role_label = "👤 학생" if msg.get("role") == "user" else "🤖 AI"
-                st.markdown(f"**{role_label}**")
-                if msg.get("images"):
-                    cols = st.columns(len(msg["images"]))
-                    for col, img in zip(cols, msg["images"]):
-                        with col:
-                            st.image(img["bytes"], width=160)
-                if msg.get("content"):
-                    st.write(msg["content"])
-                st.markdown("---")
-
-        def _truncate(text, n=40):
-            text = text or ""
-            return (text[:n] + "…") if len(text) > n else text
-
-        def _preview_texts(messages):
-            """요약 표용으로 학생의 첫 질문과 AI의 마지막 답변만 짧게 잘라낸다."""
-            student_lines = [m.get("content", "") for m in messages if m.get("role") == "user" and m.get("content")]
-            ai_lines = [m.get("content", "") for m in messages if m.get("role") != "user" and m.get("content")]
-            student_preview = _truncate(student_lines[0]) if student_lines else "(사진만 업로드)"
-            ai_preview = _truncate(ai_lines[-1]) if ai_lines else "-"
-            return student_preview, ai_preview
-
-        table_rows = []
-        for row in chat_rows:
-            user_info = _embedded_user(row)
-            messages = _deserialize_messages(row.get("messages"))
-            student_preview, ai_preview = _preview_texts(messages)
-            table_rows.append({
-                "닉네임": user_info.get("nickname") or "익명 학생",
-                "모드": row.get("feature", "-"),
-                "시각": _iso_to_kst_label(row.get("created_at")),
-                "학생 질문": student_preview,
-                "AI 답변": ai_preview,
-            })
-        st.dataframe(table_rows, use_container_width=True, hide_index=True)
-
-        st.markdown("##### 🔍 질문별 상세 보기 (사진·전체 대화)")
-        for row in chat_rows:
-            user_info = _embedded_user(row)
-            nickname = user_info.get("nickname") or "익명 학생"
-            feature = row.get("feature", "-")
-            created_label = _iso_to_kst_label(row.get("created_at"))
-            messages = _deserialize_messages(row.get("messages"))
-            with st.expander(f"👤 {nickname} · {feature} · {created_label}"):
-                st.caption(f"🆔 카카오 회원번호: {row.get('kakao_id', '-')}")
-                _render_msg_list(messages)
-
-    st.markdown("---")
-
-    st.markdown("#### 📝 학생 질문/첨삭 기록 (최신순)")
-    st.caption(
-        "'🔍 오답 첨삭'의 손글씨 진단/힌트와 '❓ 질문 클리닉'의 텍스트 질문·답변이 "
-        "문항 단위로 함께 쌓여요."
-    )
-    sq_ok, sq_rows, sq_err = fetch_student_questions()
-    if not sq_ok:
-        show_friendly_error(sq_err, "😥 학생 질문/첨삭 기록을 불러오는 중 문제가 생겼어요.")
-    elif not sq_rows:
-        st.info("아직 등록된 질문/첨삭 기록이 없습니다.")
-    else:
-        general_count = sum(1 for row in sq_rows if _is_general_question(row))
-        st.caption(f"총 {len(sq_rows)}건 (🔍 오답 첨삭 {len(sq_rows) - general_count}건 · 💬 일반 질문 {general_count}건)")
-        table_rows = []
-        for row in sq_rows:
-            feature_label, problem_label = _format_student_question_labels(row)
-            table_rows.append({
-                "구분": feature_label,
-                "학생": row.get("student_name") or "익명 학생",
-                "문제번호": problem_label,
-                "시각": _iso_to_kst_label(row.get("created_at")),
-                "AI 피드백": (
-                    (row.get("ai_feedback") or "")[:50] + "…"
-                    if len(row.get("ai_feedback") or "") > 50 else (row.get("ai_feedback") or "-")
-                ),
-            })
-        st.dataframe(table_rows, use_container_width=True, hide_index=True)
-
-        st.markdown("##### 🔍 문항별 상세 보기 (사진·질문 내용·AI 답변)")
-        for row in sq_rows:
-            student = row.get("student_name") or "익명 학생"
-            feature_label, problem_label = _format_student_question_labels(row)
-            created_label = _iso_to_kst_label(row.get("created_at"))
-            with st.expander(f"👤 {student} · {feature_label} · {problem_label} · {created_label}"):
-                if row.get("image_url"):
-                    st.image(row["image_url"], width=280)
-                st.markdown("**🙋 질문 내용**" if _is_general_question(row) else "**📝 OCR 텍스트**")
-                st.code(row.get("ocr_text") or "-")
-                st.markdown("**🤖 AI 답변**" if _is_general_question(row) else "**🤖 AI 피드백**")
-                st.markdown(row.get("ai_feedback") or "-")
 
     st.markdown("---")
 
