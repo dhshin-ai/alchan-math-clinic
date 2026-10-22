@@ -1027,6 +1027,38 @@ def render_teacher_dashboard():
         "<style>.main .block-container { max-width: 1100px !important; }</style>",
         unsafe_allow_html=True,
     )
+
+    # ==========================================
+    # 🛠️ DB 통신 상태 점검 - 사이드바는 UI 문제로 접근이 어려워 여기(대시보드 최상단)로
+    # 옮겼다. student_questions에 더미 데이터를 직접 insert해서 Supabase 연결/쓰기가
+    # 실제로 되는지 즉시 확인하는 디버그 버튼 - 성공/실패 어느 쪽이든 원문을 그대로
+    # 보여주고, 절대 조용히 넘어가지 않는다.
+    # ==========================================
+    st.markdown("### 🛠️ DB 통신 상태 점검")
+    if st.button(
+        "🚨 DB 강제 연결 및 쓰기 테스트 (student_questions)",
+        type="primary",
+        key="teacher_db_force_test_btn",
+    ):
+        if not supabase:
+            st.error("🚨 Supabase Client 객체가 None입니다. Secrets 설정을 확인하세요.")
+        else:
+            try:
+                res = (
+                    supabase.table("student_questions")
+                    .insert({
+                        "problem_code": "TEST-000",
+                        "ai_feedback": "선생님 모드 직접 테스트",
+                        "ocr_text": "연결 확인",
+                    })
+                    .execute()
+                )
+                st.success(f"✅ DB 쓰기 성공! 반환 데이터: {res.data}")
+            except Exception as e:
+                st.error(f"❌ DB 통신 실패 에러 원문:\n{repr(e)}")
+
+    st.markdown("---")
+
     top_c1, top_c2 = st.columns([4, 1])
     with top_c1:
         st.subheader("👨‍🏫 선생님 대시보드")
@@ -1434,9 +1466,9 @@ def inject_custom_css():
         background-color: #F8FAFC;
     }
 
-    /* 사이드바는 완전히 숨기지 않고 기본 펼침(expanded) 상태로 둔다 - 로그아웃 버튼과
-       "🚨 DB 강제 연결 테스트" 버튼이 여기 들어있다. "선생님 모드" 진입은 태블릿/모바일에서
-       사이드바를 열기 번거로운 문제 때문에 '👤 마이페이지' 화면 맨 아래로 옮겼다. */
+    /* 사이드바는 완전히 숨기지 않고 기본 펼침(expanded) 상태로 둔다 - 로그아웃 버튼이
+       여기 들어있다. "선생님 모드" 진입은 태블릿/모바일에서 사이드바를 열기 번거로운
+       문제 때문에 '👤 마이페이지' 화면 맨 아래로 옮겼다. */
 
     /* ==========================================
        📱 모바일 앱 셸 - Streamlit 기본 크롬 숨기기 + 폰 화면 폭으로 고정
@@ -2594,47 +2626,6 @@ if not supabase:
 # (메인 화면에는 로그인 상태를 알리는 텍스트를 일절 띄우지 않는다)
 # ==========================================
 with st.sidebar:
-    # ==========================================
-    # 🚨 DB 강제 연결 테스트 - student_questions에 실제로 Insert가 되는지 즉시 확인하는
-    # 디버그 버튼. 성공/실패 어느 쪽이든 원문 예외/에러를 절대 숨기지 않고 그대로 띄운다.
-    # ==========================================
-    st.markdown('<div id="db-force-test-marker"></div>', unsafe_allow_html=True)
-    if st.button("🚨 DB 강제 연결 테스트", key="db_force_test_btn", use_container_width=True):
-        if not supabase:
-            st.error(
-                "🚨 Supabase 클라이언트가 None입니다. st.secrets에 SUPABASE_URL/"
-                "SUPABASE_SERVICE_KEY가 없거나 create_client() 생성 자체가 실패했습니다."
-            )
-        else:
-            try:
-                test_res = (
-                    supabase.table("student_questions")
-                    .insert({"problem_code": "TEST-000", "ai_feedback": "DB 연결 테스트"})
-                    .execute()
-                )
-                st.success(f"✅ DB 강제 연결 테스트 성공! 삽입된 데이터: {test_res.data}")
-            except Exception as e:
-                detail_lines = [f"예외 타입: {type(e).__name__}", f"원문: {e!r}"]
-                for attr in ("message", "code", "details", "hint"):
-                    val = getattr(e, attr, None)
-                    if val:
-                        detail_lines.append(f"{attr}: {val}")
-                st.error("🚨 DB 강제 연결 테스트 실패!\n\n" + "\n".join(detail_lines))
-    st.markdown(
-        """
-        <style>
-        div[data-testid="element-container"]:has(#db-force-test-marker)
-            + div[data-testid="element-container"] button {
-            background-color: #d32f2f !important;
-            color: white !important;
-            border-color: #b71c1c !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown("---")
-
     if st.session_state.authenticated:
         if st.button("🔓 로그아웃", use_container_width=True, key="sidebar_logout_btn"):
             persist_current_student()
