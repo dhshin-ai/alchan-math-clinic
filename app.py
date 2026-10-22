@@ -30,7 +30,7 @@ st.set_page_config(
     page_title="다혜T의 1:1 수학 클리닉",
     page_icon="👩‍🏫",
     layout="centered",  # 모바일 앱 셸 - 480px 폭으로 CSS에서 한 번 더 강제한다
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 # ==========================================
@@ -1434,15 +1434,14 @@ def inject_custom_css():
         background-color: #F8FAFC;
     }
 
-    /* 사이드바는 완전히 숨기지 않고 기본 접힘(collapsed) 상태로만 둔다.
-       로그아웃 버튼이 여기 들어있다. "선생님 모드" 진입은 태블릿/모바일에서 사이드바를
-       열기 번거로운 문제 때문에 '👤 마이페이지' 화면 맨 아래로 옮겼다. */
+    /* 사이드바는 완전히 숨기지 않고 기본 펼침(expanded) 상태로 둔다 - 로그아웃 버튼과
+       "🚨 DB 강제 연결 테스트" 버튼이 여기 들어있다. "선생님 모드" 진입은 태블릿/모바일에서
+       사이드바를 열기 번거로운 문제 때문에 '👤 마이페이지' 화면 맨 아래로 옮겼다. */
 
     /* ==========================================
        📱 모바일 앱 셸 - Streamlit 기본 크롬 숨기기 + 폰 화면 폭으로 고정
        ========================================== */
     #MainMenu,
-    header[data-testid="stHeader"],
     [data-testid="stToolbar"],
     [data-testid="stDecoration"],
     [data-testid="stStatusWidget"],
@@ -1450,6 +1449,16 @@ def inject_custom_css():
     .viewerBadge_container__1QSob,
     [class*="viewerBadge"] {
         display: none !important;
+    }
+
+    /* stHeader 자체는 display:none으로 지우지 않는다 - 사이드바를 접었다가 다시 펼치는
+       토글 버튼(▶)이 Streamlit 버전에 따라 이 헤더 영역 안에 같이 렌더링되는데, 헤더를
+       통째로 숨기면 PC에서 사이드바를 한 번 접으면 다시 펼 방법이 사라져 버린다. 보기
+       싫은 메뉴/툴바 등은 위에서 각각 개별적으로 숨기고, 헤더 자체는 투명하게 깔아
+       공간만 접어 둔다. */
+    header[data-testid="stHeader"] {
+        background: transparent !important;
+        height: auto !important;
     }
 
     /* 본문을 스마트폰 폭(480px)으로 가운데 정렬해서, PC에서도 폰 화면처럼 보이게 한다.
