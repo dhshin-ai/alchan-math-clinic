@@ -3070,49 +3070,72 @@ def classify_concept_type(image_bytes, media_type, taxonomy_catalog_text):
         return ""
 
 
+def _format_string_array(value):
+    """core_formula/standard_steps/forbidden_approaches(JSONB 문자열 배열)를 안전하게
+    문자열 리스트로 정규화한다. dict 리스트로 온 과거 형태({"title","content"})도
+    "title: content" 한 줄 문자열로 펴서 받아들인다."""
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [value]
+    items = []
+    for item in value:
+        if isinstance(item, dict):
+            title = item.get("title", "")
+            content = item.get("content", "")
+            items.append(f"{title}: {content}" if title else content)
+        else:
+            items.append(str(item))
+    return items
+
+
 def format_taxonomy_catalog(rows):
     """list_concept_taxonomies()가 돌려준 유형 목록을 classify_concept_type()에 넘길
-    'type_code - 유형명 (핵심 공식)' 줄글 목록으로 펼친다."""
+    '[대단원 > 중단원] type_code - 유형명 (핵심 공식)' 줄글 목록으로 펼친다. 대단원/
+    중단원 맥락까지 같이 줘야 분류가 더 정확해진다."""
     lines = []
     for row in rows:
         code = row.get("type_code", "")
         if not code:
             continue
         name = row.get("type_name") or ""
-        formula = row.get("core_formula") or ""
-        label = f"{code}" + (f" - {name}" if name else "")
-        if formula:
-            label += f" ({formula})"
+        major_chapter = row.get("major_chapter") or ""
+        sub_chapter = row.get("sub_chapter") or ""
+        chapter_prefix = f"[{major_chapter} > {sub_chapter}] " if (major_chapter or sub_chapter) else ""
+        label = f"{chapter_prefix}{code}" + (f" - {name}" if name else "")
+        formula_items = _format_string_array(row.get("core_formula"))
+        if formula_items:
+            label += f" ({'; '.join(formula_items)})"
         lines.append(label)
     return "\n".join(lines)
 
 
 def format_concept_taxonomy_guideline(taxonomy_row):
-    """concept_taxonomies 행(core_formula/standard_steps/forbidden_approaches)을
-    verify_image_against_concept_taxonomy()에 주입할 '유형별 채점 가이드라인' 텍스트로
-    펼친다. standard_steps/forbidden_approaches는 문자열 리스트 또는 {"title","content"}
-    형태의 dict 리스트 어느 쪽이든 받아들인다."""
+    """concept_taxonomies 행(core_formula/standard_steps/forbidden_approaches, 모두
+    JSONB 문자열 배열)을 verify_image_against_concept_taxonomy()에 주입할 '유형별
+    채점 가이드라인' 텍스트로 펼친다."""
     lines = []
     type_name = taxonomy_row.get("type_name") or taxonomy_row.get("type_code") or ""
+    major_chapter = taxonomy_row.get("major_chapter") or ""
+    sub_chapter = taxonomy_row.get("sub_chapter") or ""
+    if major_chapter or sub_chapter:
+        lines.append(f"[단원] {major_chapter} > {sub_chapter}")
     if type_name:
         lines.append(f"[유형] {type_name}")
 
-    core_formula = taxonomy_row.get("core_formula")
-    if core_formula:
-        lines.append(f"[핵심 공식] {core_formula}")
+    core_formula_items = _format_string_array(taxonomy_row.get("core_formula"))
+    if core_formula_items:
+        lines.append("[핵심 공식]")
+        for formula in core_formula_items:
+            lines.append(f"- {formula}")
 
-    standard_steps = taxonomy_row.get("standard_steps") or []
+    standard_steps = _format_string_array(taxonomy_row.get("standard_steps"))
     if standard_steps:
         lines.append("[표준 풀이 단계]")
-        for i, step in enumerate(standard_steps, start=1):
-            if isinstance(step, dict):
-                title = step.get("title", "")
-                content = step.get("content", "")
-                lines.append(f"{i}단계: {title} ({content})" if title else f"{i}단계: {content}")
-            else:
-                lines.append(f"{i}단계: {step}")
+        for step in standard_steps:
+            lines.append(f"- {step}")
 
-    forbidden_approaches = taxonomy_row.get("forbidden_approaches") or []
+    forbidden_approaches = _format_string_array(taxonomy_row.get("forbidden_approaches"))
     if forbidden_approaches:
         lines.append("[금지된 우회/오답 패턴]")
         for item in forbidden_approaches:

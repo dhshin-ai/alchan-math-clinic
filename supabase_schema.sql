@@ -1,7 +1,7 @@
 -- ============================================================
 -- 알찬학원 신다혜 쌤의 수학 클리닉 - Supabase 스키마
 -- Supabase 대시보드 > SQL Editor 에서 이 파일 내용을 그대로 붙여넣고 실행하세요.
--- (앱 코드는 이 7개 테이블 이름/컬럼명을 그대로 참조하므로 이름을 바꾸면 안 됩니다.)
+-- (앱 코드는 이 8개 테이블 이름/컬럼명을 그대로 참조하므로 이름을 바꾸면 안 됩니다.)
 -- ============================================================
 
 -- gen_random_uuid()에 필요 (Supabase 신규 프로젝트는 기본 활성화되어 있지만, 혹시 몰라 명시)
@@ -147,6 +147,34 @@ alter table daily_missions enable row level security;
 alter table ocr_corrections enable row level security;
 alter table problem_solutions enable row level security;
 alter table student_questions enable row level security;
+
+-- ------------------------------------------------------------
+-- 8) concept_taxonomies: 공통수학2 'I. 도형의 방정식' 전체 63개 유형의 채점
+--    가이드라인(핵심 공식/표준 풀이 단계/금지된 우회·오답 패턴). 원장님이 Supabase에서
+--    직접 실행한 DDL을 그대로 옮겨 둔다 - 손글씨 풀이 첨삭 1장 모드가 problem_solutions에
+--    등록된 특정 문제가 없을 때, 이 테이블로 유형을 분류해 한 단계 느슨한 단위로라도
+--    표준 풀이 단계와 대조 채점한다(app.py의 classify_concept_type()/
+--    get_concept_taxonomy() 참고).
+--
+-- ⚠️ 아래 정책은 원장님이 명시적으로 요청한 "anon 포함 전체 공개 읽기/쓰기"입니다.
+--    이 앱은 service_role 키로만 접근하므로 이 정책이 없어도 앱 동작엔 영향이
+--    없습니다 - 열어 두면 anon 키를 아는 누구나 이 표를 읽고/쓰고/지울 수 있다는
+--    뜻이니, 나중에 꼭 필요 없다고 판단되면 아래 DROP POLICY로 되돌리면 됩니다.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS concept_taxonomies (
+    id SERIAL PRIMARY KEY,
+    type_code VARCHAR(50) UNIQUE NOT NULL,
+    major_chapter VARCHAR(100) NOT NULL,
+    sub_chapter VARCHAR(100) NOT NULL,
+    type_name VARCHAR(200) NOT NULL,
+    core_formula JSONB NOT NULL,
+    standard_steps JSONB NOT NULL,
+    forbidden_approaches JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+ALTER TABLE concept_taxonomies ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow public read-write for concept_taxonomies" ON concept_taxonomies;
+CREATE POLICY "Allow public read-write for concept_taxonomies" ON concept_taxonomies FOR ALL TO public USING (true) WITH CHECK (true);
 
 -- ------------------------------------------------------------
 -- 🚨 진단용 "RLS 전면 개방" - student_questions가 계속 비어 있을 때 쓰는 비상 쿼리

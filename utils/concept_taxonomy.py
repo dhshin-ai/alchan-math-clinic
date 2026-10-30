@@ -38,23 +38,24 @@ def _get_supabase_client():
 
 @st.cache_data(ttl=600)
 def list_concept_taxonomies():
-    """등록된 전체 유형의 (type_code, type_name, core_formula) 목록을 가져온다 -
-    Vision 분류 단계(classify_concept_type)에서 '63개 유형 중 어디에 해당하는지'
-    고르게 할 때 쓴다.
+    """등록된 전체 유형의 (type_code, type_name, major_chapter, sub_chapter,
+    core_formula) 목록을 가져온다 - Vision 분류 단계(classify_concept_type)에서 '63개
+    유형 중 어디에 해당하는지' 고르게 할 때, 대단원/중단원 맥락까지 같이 참조하게 한다.
 
     학생 여러 명이 동시에 사진을 올려도 매번 테이블을 긁지 않도록 10분 캐시를 건다.
-    type_name 컬럼이 없는 환경이면 자동으로 뺀 채 조회를 재시도한다(선생님이 처음
-    등록할 때 컬럼 구성이 조금 다를 수 있으므로).
+    major_chapter/sub_chapter 컬럼이 없는 환경이면 자동으로 뺀 채 조회를 재시도한다.
     """
     client = _get_supabase_client()
     if not client:
         return []
     try:
-        res = client.table(TABLE_NAME).select("type_code, type_name, core_formula").execute()
+        res = client.table(TABLE_NAME).select(
+            "type_code, type_name, major_chapter, sub_chapter, core_formula"
+        ).execute()
         return res.data or []
     except Exception:
         try:
-            res = client.table(TABLE_NAME).select("type_code, core_formula").execute()
+            res = client.table(TABLE_NAME).select("type_code, type_name, core_formula").execute()
             return res.data or []
         except Exception:
             return []
