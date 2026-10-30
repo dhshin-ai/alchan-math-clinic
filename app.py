@@ -13,6 +13,7 @@ import anthropic
 import streamlit as st
 from utils.math_ocr import recognize_handwriting_latex
 from utils.solution_db import save_problem_solution, get_problem_solution, list_registered_problems
+from utils.concept_taxonomy import list_concept_taxonomies, get_concept_taxonomy
 from utils.pdf_parser import (
     is_pdf_parser_available,
     is_pdf_image_available,
@@ -3020,6 +3021,171 @@ def verify_image_against_reference(image_bytes, media_type, reference_solution, 
     return get_response_text(response)
 
 
+CONCEPT_TYPE_CLASSIFY_SYSTEM_PROMPT = (
+    "너는 수학 문제를 미리 정의된 유형 목록과 대조해 분류하는 분류기다. 주어진 문제 사진이 "
+    "아래 유형 목록 중 어떤 type_code에 해당하는지 판별하라.\n"
+    "- 반드시 목록에 있는 type_code 중 하나만 그대로 출력하라.\n"
+    "- 목록의 어떤 유형과도 명확히 일치하지 않으면 'NONE'이라고만 출력하라.\n"
+    "- 다른 설명은 절대 덧붙이지 마라."
+)
+
+
+def classify_concept_type(image_bytes, media_type, taxonomy_catalog_text):
+    """1장 모드에서 문제 사진이 concept_taxonomies의 어떤 type_code에 해당하는지 Vision으로
+    판별한다.
+
+    실패하거나(API 에러) 일치하는 유형이 없으면('NONE' 응답) 빈 문자열을 돌려준다 -
+    호출하는 쪽이 유형 매칭 없이 기존 자유형식 첨삭으로 조용히 전환해야 한다.
+    """
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model=MODEL_NAME,
+            max_tokens=50,
+            system=CONCEPT_TYPE_CLASSIFY_SYSTEM_PROMPT,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": base64.b64encode(image_bytes).decode("utf-8"),
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            f"[유형 목록]\n{taxonomy_catalog_text}\n\n"
+                            "이 문제 사진이 위 목록 중 어떤 type_code에 해당하는지 판별해줘."
+                        ),
+                    },
+                ],
+            }],
+        )
+        raw_code = get_response_text(response).strip()
+        return "" if raw_code.upper() == "NONE" else raw_code
+    except Exception:
+        return ""
+
+
+def format_taxonomy_catalog(rows):
+    """list_concept_taxonomies()가 돌려준 유형 목록을 classify_concept_type()에 넘길
+    'type_code - 유형명 (핵심 공식)' 줄글 목록으로 펼친다."""
+    lines = []
+    for row in rows:
+        code = row.get("type_code", "")
+        if not code:
+            continue
+        name = row.get("type_name") or ""
+        formula = row.get("core_formula") or ""
+        label = f"{code}" + (f" - {name}" if name else "")
+        if formula:
+            label += f" ({formula})"
+        lines.append(label)
+    return "\n".join(lines)
+
+
+def format_concept_taxonomy_guideline(taxonomy_row):
+    """concept_taxonomies 행(core_formula/standard_steps/forbidden_approaches)을
+    verify_image_against_concept_taxonomy()에 주입할 '유형별 채점 가이드라인' 텍스트로
+    펼친다. standard_steps/forbidden_approaches는 문자열 리스트 또는 {"title","content"}
+    형태의 dict 리스트 어느 쪽이든 받아들인다."""
+    lines = []
+    type_name = taxonomy_row.get("type_name") or taxonomy_row.get("type_code") or ""
+    if type_name:
+        lines.append(f"[유형] {type_name}")
+
+    core_formula = taxonomy_row.get("core_formula")
+    if core_formula:
+        lines.append(f"[핵심 공식] {core_formula}")
+
+    standard_steps = taxonomy_row.get("standard_steps") or []
+    if standard_steps:
+        lines.append("[표준 풀이 단계]")
+        for i, step in enumerate(standard_steps, start=1):
+            if isinstance(step, dict):
+                title = step.get("title", "")
+                content = step.get("content", "")
+                lines.append(f"{i}단계: {title} ({content})" if title else f"{i}단계: {content}")
+            else:
+                lines.append(f"{i}단계: {step}")
+
+    forbidden_approaches = taxonomy_row.get("forbidden_approaches") or []
+    if forbidden_approaches:
+        lines.append("[금지된 우회/오답 패턴]")
+        for item in forbidden_approaches:
+            lines.append(f"- {item}")
+
+    return "\n".join(lines)
+
+
+def verify_image_against_concept_taxonomy(image_bytes, media_type, taxonomy_guideline, student_grade):
+    """1장 모드 전용 대조(Diff) 검증: concept_taxonomies 유형 가이드라인(표준 풀이 단계 +
+    금지된 우회/오답 패턴) 기준으로 사진 속 학생의 손글씨 풀이를 채점한다.
+
+    verify_image_against_reference()와 같은 "스스로 풀지 말고 다른 점만 찾기" 원칙과
+    DIAGNOSIS:/HINT: 2줄 출력 형식을 쓰지만, 기준이 특정 문제의 정석 해설이 아니라
+    유형 단위의 표준 풀이 단계/금지 패턴이라는 점이 다르다.
+    """
+    client = anthropic.Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model=MODEL_NAME,
+        max_tokens=1200,
+        system=(
+            "너는 계산을 수행하는 모델이 아니라, 주어진 '유형별 채점 가이드라인'을 기준으로 "
+            "사진 속 학생의 손글씨 풀이를 채점하는 대조(Diff) 알고리즘이다. 절대 네 스스로 "
+            "문제를 풀거나 식을 새로 계산하지 마라.\n\n"
+            "★ [검증 규칙]:\n"
+            "1. 사진 속 학생의 풀이를 위에서부터 줄 단위로 읽어라.\n"
+            "2. 학생의 풀이가 가이드라인의 '표준 풀이 단계' 중 몇 단계까지 수학적으로 "
+            "동등한지 판단하라.\n"
+            "3. 가이드라인의 단계와 차이가 발견된 최초의 지점을 특정하라.\n"
+            "4. 학생의 풀이가 가이드라인의 '금지된 우회/오답 패턴'에 해당하는 접근을 썼다면, "
+            "그 즉시 해당 패턴을 지적하고 표준 풀이 단계로 돌아가도록 유도하라.\n"
+            "5. 가이드라인을 그대로 노출하지 말고, 학생이 오류를 범한 단계의 '핵심 개념'을 "
+            "떠올리도록 1줄짜리 소크라테스 역질문을 작성하라.\n"
+            "6. 절대 네가 대신 식을 전개하거나 계산한 결과를 적어서 보여주지 마라 - 오류가 "
+            "발생한 줄과 개념만 짚어라.\n\n"
+            "★ [🚨 식의 '전제'와 '전개 과정'을 구분해라 - 맞는 식을 틀렸다고 억지 부리지 마라]:\n"
+            "- 학생의 어떤 줄이 표준 풀이 단계의 한 단계와 수학적으로 동등하다면(표현이 "
+            "다르더라도) 그 줄 자체를 의심하지 마라. 차이는 '그 줄에서 다음 줄로 넘어가는 "
+            "전개/계산 과정'에서만 찾아라.\n\n"
+            "★ [🚨 수식 서식 - 한 줄로 뭉개서 쓰지 마라]:\n"
+            "- 수식을 인라인($...$)으로 한 줄에 연달아 나열하지 마라. 짧게 하나만 인용할 "
+            "때만 인라인 $...$를 써라.\n\n"
+            "★ [출력 형식 - 반드시 이 2줄 형식 그대로, 다른 설명 없이]:\n"
+            "DIAGNOSIS: (표준 풀이 단계의 몇 번째 단계에서 어떤 차이/금지 패턴이 발견됐는지 "
+            "1줄로 요약. 차이가 없으면 어디까지 올바른지 1줄로 요약)\n"
+            "HINT: (가이드라인/정답을 그대로 노출하지 않는 소크라테스식 역질문 1줄. 수식은 "
+            "'$...$'로 표기)"
+        ),
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": base64.b64encode(image_bytes).decode("utf-8"),
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        f"[과목: {student_grade}]\n\n"
+                        f"[유형별 채점 가이드라인]\n{taxonomy_guideline}\n\n"
+                        "위 가이드라인을 기준으로 사진 속 학생 풀이를 처음부터 대조 검증해줘."
+                    ),
+                },
+            ],
+        }],
+    )
+    return get_response_text(response)
+
+
 def parse_handwriting_diagnosis(raw_text):
     """verify_transcribed_solution()의 'DIAGNOSIS: .../HINT: ...' 2줄 출력을 분리한다.
 
@@ -3264,6 +3430,8 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
             images_submitted = [{"bytes": p_bytes, "mime": uploaded_problem.type}]
             label = "📷 문제 사진을 올렸어요!"
 
+            matched_type_code = ""
+
             try:
                 if db_problem:
                     st.caption(f"📚 문제 {detected_code}번 - 등록된 정석 해설({selected_book_title})과 대조했어요.")
@@ -3285,36 +3453,74 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                             bot_reply += f"\n\n💡 **다혜T의 역질문 힌트:** {hint}"
                     log_label = "풀이 검토 사진 제출(DB 대조)"
                 else:
-                    # 번호를 못 찾았거나(detected_code == "") DB에 등록된 해설이 없는 경우 -
-                    # 기존처럼 단일 Vision 호출로 자유형식 첨삭을 돌려준다.
-                    api_text = (
-                        f"[모드: {mode} / 과목: {st.session_state.student_grade}] 이 사진 안의 손글씨 풀이를 첫 줄부터 "
-                        "줄 단위로 검증하여 잘한 점과 연산 실수가 발생한 정확한 위치를 콕 짚어라."
-                    )
-                    content_blocks = [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": uploaded_problem.type,
-                                "data": base64.b64encode(p_bytes).decode("utf-8"),
-                            },
-                        },
-                        {"type": "text", "text": api_text},
-                    ]
-                    with st.spinner("손글씨 풀이를 줄 단위로 분석하는 중입니다..."):
-                        response = anthropic.Anthropic(api_key=api_key).messages.create(
-                            model=MODEL_NAME,
-                            max_tokens=2000,
-                            system=system_prompt,
-                            messages=[{"role": "user", "content": content_blocks}],
-                        )
-                    bot_reply = get_response_text(response)
-                    log_label = "풀이 검토 사진 제출"
+                    # 번호를 못 찾았거나(detected_code == "") 그 번호로 등록된 특정 문제
+                    # 해설이 없는 경우 - 더 느슨한 단위인 '유형(concept_taxonomies)'
+                    # 매칭을 시도한다. 같은 유형이면 특정 문제가 등록돼 있지 않아도
+                    # 여전히 '표준 풀이 단계' 기준으로 대조 채점할 수 있다.
+                    taxonomy_catalog = list_concept_taxonomies()
+                    taxonomy_row = None
+                    if taxonomy_catalog:
+                        catalog_text = format_taxonomy_catalog(taxonomy_catalog)
+                        with st.spinner("문제 유형을 분류하는 중입니다..."):
+                            matched_type_code = classify_concept_type(
+                                p_bytes, uploaded_problem.type, catalog_text
+                            )
+                        if matched_type_code:
+                            taxonomy_row = get_concept_taxonomy(matched_type_code)
 
-                # 감지된 문제 번호(DB 매칭 여부와 무관하게)를 그대로 저장해야 선생님
-                # 대시보드에서 "몇 번 문제 첨삭 기록인지"가 바로 보인다.
-                log_student_question(detected_code, p_bytes, "", bot_reply)
+                    if taxonomy_row:
+                        type_label = taxonomy_row.get("type_name") or matched_type_code
+                        st.caption(f"🏷️ 유형 분류: {type_label} ({matched_type_code}) 가이드라인과 대조했어요.")
+                        taxonomy_guideline = format_concept_taxonomy_guideline(taxonomy_row)
+                        api_text = (
+                            f"[모드: {mode} / 과목: {st.session_state.student_grade}] 유형별 채점 "
+                            f"가이드라인과 대조해서 '{type_label}' 유형 손글씨 풀이를 검증했어."
+                        )
+                        with st.spinner("유형별 가이드라인과 대조하며 풀이를 검증하는 중입니다..."):
+                            raw_diagnosis = verify_image_against_concept_taxonomy(
+                                p_bytes, uploaded_problem.type, taxonomy_guideline,
+                                st.session_state.student_grade,
+                            )
+                        diagnosis, hint, parsed_ok = parse_handwriting_diagnosis(raw_diagnosis)
+                        if not parsed_ok:
+                            bot_reply = diagnosis or "(빈 응답)"
+                        else:
+                            bot_reply = f"🔍 **진단 결과:** {diagnosis}"
+                            if hint:
+                                bot_reply += f"\n\n💡 **다혜T의 역질문 힌트:** {hint}"
+                        log_label = "풀이 검토 사진 제출(유형 가이드라인 대조)"
+                    else:
+                        # 번호도 유형도 매칭되지 않으면 기존처럼 단일 Vision 호출로
+                        # 자유형식 첨삭을 돌려준다.
+                        api_text = (
+                            f"[모드: {mode} / 과목: {st.session_state.student_grade}] 이 사진 안의 손글씨 "
+                            "풀이를 첫 줄부터 줄 단위로 검증하여 잘한 점과 연산 실수가 발생한 정확한 위치를 "
+                            "콕 짚어라."
+                        )
+                        content_blocks = [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": uploaded_problem.type,
+                                    "data": base64.b64encode(p_bytes).decode("utf-8"),
+                                },
+                            },
+                            {"type": "text", "text": api_text},
+                        ]
+                        with st.spinner("손글씨 풀이를 줄 단위로 분석하는 중입니다..."):
+                            response = anthropic.Anthropic(api_key=api_key).messages.create(
+                                model=MODEL_NAME,
+                                max_tokens=2000,
+                                system=system_prompt,
+                                messages=[{"role": "user", "content": content_blocks}],
+                            )
+                        bot_reply = get_response_text(response)
+                        log_label = "풀이 검토 사진 제출"
+
+                # 감지된 문제 번호가 있으면 그걸, 없으면 매칭된 유형 코드를 남겨야 선생님
+                # 대시보드에서 "몇 번 문제/어떤 유형 첨삭 기록인지"가 바로 보인다.
+                log_student_question(detected_code or matched_type_code, p_bytes, "", bot_reply)
 
                 # 사진 제출 자체도 대화 기록에 남겨서 새로고침 후에도 사진 내역이 보이게 한다.
                 st.session_state[messages_key].append({
