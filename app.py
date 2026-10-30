@@ -3030,13 +3030,23 @@ CONCEPT_TYPE_CLASSIFY_SYSTEM_PROMPT = (
 )
 
 
-def classify_concept_type(image_bytes, media_type, taxonomy_catalog_text):
+def classify_concept_type(image_bytes, media_type, taxonomy_rows):
     """1장 모드에서 문제 사진이 concept_taxonomies의 어떤 type_code에 해당하는지 Vision으로
-    판별한다.
+    판별한다. taxonomy_rows는 list_concept_taxonomies()가 돌려준 전체 유형 목록(63개) -
+    이 함수가 직접 format_taxonomy_catalog()로 펼쳐 프롬프트에 그대로 공급한다.
 
-    실패하거나(API 에러) 일치하는 유형이 없으면('NONE' 응답) 빈 문자열을 돌려준다 -
-    호출하는 쪽이 유형 매칭 없이 기존 자유형식 첨삭으로 조용히 전환해야 한다.
+    실패하거나(API 에러) 일치하는 유형이 없으면 빈 문자열을 돌려준다 - 호출하는 쪽이
+    유형 매칭 없이 기존 자유형식 첨삭으로 전환해야 한다. 어느 경우든(카탈로그 공백,
+    'NONE' 응답, 카탈로그에 없는 코드 응답, API 에러) print()로 정확한 사유를 콘솔에
+    남겨서, "왜 매칭에 실패해서 레거시 자유형식으로 샜는지"가 로그에 바로 보이게 한다.
     """
+    valid_codes = {row.get("type_code") for row in taxonomy_rows if row.get("type_code")}
+    if not valid_codes:
+        print("[classify_concept_type] 유형 카탈로그가 비어 있어 분류를 건너뜁니다 "
+              "(list_concept_taxonomies()가 0건을 반환함).")
+        return ""
+
+    catalog_text = format_taxonomy_catalog(taxonomy_rows)
     try:
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
@@ -3057,17 +3067,32 @@ def classify_concept_type(image_bytes, media_type, taxonomy_catalog_text):
                     {
                         "type": "text",
                         "text": (
-                            f"[유형 목록]\n{taxonomy_catalog_text}\n\n"
+                            f"[유형 목록]\n{catalog_text}\n\n"
                             "이 문제 사진이 위 목록 중 어떤 type_code에 해당하는지 판별해줘."
                         ),
                     },
                 ],
             }],
         )
-        raw_code = get_response_text(response).strip()
-        return "" if raw_code.upper() == "NONE" else raw_code
-    except Exception:
+    except Exception as e:
+        print(f"[classify_concept_type] Vision 호출 실패: {e!r}")
         return ""
+
+    raw_code = get_response_text(response).strip()
+    if not raw_code or raw_code.upper() == "NONE":
+        print(f"[classify_concept_type] Vision이 매칭 유형 없음으로 응답함: {raw_code!r}")
+        return ""
+    if raw_code in valid_codes:
+        return raw_code
+    # 모델이 지시를 어기고 설명을 덧붙여도, 카탈로그에 있는 코드가 응답 문자열
+    # 안에 그대로 들어 있으면 거기서 추출해 구제한다 - 완전히 다른 분류로 새는
+    # 가장 흔한 원인이 바로 이 포맷 이탈이었다.
+    for code in valid_codes:
+        if code in raw_code:
+            print(f"[classify_concept_type] 모델 응답에서 코드를 추출함: {raw_code!r} -> {code!r}")
+            return code
+    print(f"[classify_concept_type] 모델이 카탈로그에 없는 코드를 반환함: {raw_code!r}")
+    return ""
 
 
 def _format_string_array(value):
@@ -3482,18 +3507,29 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                     # 여전히 '표준 풀이 단계' 기준으로 대조 채점할 수 있다.
                     taxonomy_catalog = list_concept_taxonomies()
                     taxonomy_row = None
-                    if taxonomy_catalog:
-                        catalog_text = format_taxonomy_catalog(taxonomy_catalog)
+                    if not taxonomy_catalog:
+                        print("[1장 모드] concept_taxonomies 카탈로그가 비어 있어 유형 매칭을 "
+                              "건너뛰고 자유형식 첨삭으로 전환합니다.")
+                    else:
                         with st.spinner("문제 유형을 분류하는 중입니다..."):
                             matched_type_code = classify_concept_type(
-                                p_bytes, uploaded_problem.type, catalog_text
+                                p_bytes, uploaded_problem.type, taxonomy_catalog
                             )
-                        if matched_type_code:
+                        if not matched_type_code:
+                            print("[1장 모드] classify_concept_type()이 빈 문자열을 반환해 "
+                                  "자유형식 첨삭으로 전환합니다.")
+                        else:
                             taxonomy_row = get_concept_taxonomy(matched_type_code)
+                            if not taxonomy_row:
+                                print(
+                                    f"[1장 모드] get_concept_taxonomy({matched_type_code!r})이 None을 "
+                                    "반환했습니다 - DB 조회 실패 또는 해당 type_code 미등록. "
+                                    "자유형식 첨삭으로 전환합니다."
+                                )
 
                     if taxonomy_row:
                         type_label = taxonomy_row.get("type_name") or matched_type_code
-                        st.caption(f"🏷️ 유형 분류: {type_label} ({matched_type_code}) 가이드라인과 대조했어요.")
+                        st.success(f"🎯 [{matched_type_code}] {type_label} (표준 가이드라인 적용)")
                         taxonomy_guideline = format_concept_taxonomy_guideline(taxonomy_row)
                         api_text = (
                             f"[모드: {mode} / 과목: {st.session_state.student_grade}] 유형별 채점 "
