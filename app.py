@@ -66,12 +66,13 @@ MODEL_NAME = "claude-sonnet-4-5"
 # 📐 수학 튜터링 3대 메타 헌법
 # 문제 유형마다 "이런 우회는 금지" 규칙을 하나씩 등록하는 건 63개 유형, 수백 개 문제로
 # 갈수록 끝이 없다 - 그래서 특정 유형/문제에 매달지 않고 모든 채점·분류·힌트 프롬프트
-# 최상단에 공통으로 강제하는 전역 원칙 3개를 여기 한 곳에만 정의해 둔다. 분류
-# (CONCEPT_TYPE_CLASSIFY_SYSTEM_PROMPT)와 채점(HANDWRITING_VERIFY_SYSTEM_PROMPT,
-# verify_image_against_reference/verify_image_against_concept_taxonomy의 인라인
-# 프롬프트, load_system_prompt)에 전부 이 블록을 맨 앞에 끼워 넣는다. '💮 개념 PASS'는
-# 사진 속 학생 풀이를 대조/분류하는 게 아니라 선생님이 정한 주제로 구술 테스트를 보는
-# 별개의 기능이라 여기 포함하지 않았다.
+# 최상단에 공통으로 강제하는 전역 원칙 3개를 여기 한 곳에만 정의해 둔다. 참조용 유형
+# 태깅(CONCEPT_TYPE_CLASSIFY_SYSTEM_PROMPT), 'Solve-First & Diagnose' 2단계 씽킹
+# 엔진(ANALYZE_AND_COACH_SYSTEM_PROMPT), 등록된 특정 문제 대조 검증
+# (verify_image_against_reference의 인라인 프롬프트), 텍스트 전사 대조 검증
+# (HANDWRITING_VERIFY_SYSTEM_PROMPT), 일반 채팅(load_system_prompt)에 전부 이 블록을
+# 맨 앞에 끼워 넣는다. '💮 개념 PASS'는 사진 속 학생 풀이를 대조/분류하는 게 아니라
+# 선생님이 정한 주제로 구술 테스트를 보는 별개의 기능이라 여기 포함하지 않았다.
 # ==========================================
 GLOBAL_MATH_TUTORING_CONSTITUTION = (
     "★★★ [수학 튜터링 3대 메타 헌법 - 아래 3가지를 다른 모든 지시보다 최우선으로 지켜라] ★★★\n"
@@ -3173,8 +3174,8 @@ def format_taxonomy_catalog(rows):
 
 def format_concept_taxonomy_guideline(taxonomy_row):
     """concept_taxonomies 행(core_formula/standard_steps/forbidden_approaches, 모두
-    JSONB 문자열 배열)을 verify_image_against_concept_taxonomy()에 주입할 '유형별
-    채점 가이드라인' 텍스트로 펼친다."""
+    JSONB 문자열 배열)을 analyze_and_coach_math_solution()의 참고용 taxonomy_hint로
+    주입할 '유형별 채점 가이드라인' 텍스트로 펼친다."""
     lines = []
     type_name = taxonomy_row.get("type_name") or taxonomy_row.get("type_code") or ""
     major_chapter = taxonomy_row.get("major_chapter") or ""
@@ -3205,50 +3206,97 @@ def format_concept_taxonomy_guideline(taxonomy_row):
     return "\n".join(lines)
 
 
-def verify_image_against_concept_taxonomy(image_bytes, media_type, taxonomy_guideline, student_grade):
-    """1장 모드 전용 대조(Diff) 검증: concept_taxonomies 유형 가이드라인(표준 풀이 단계 +
-    금지된 우회/오답 패턴) 기준으로 사진 속 학생의 손글씨 풀이를 채점한다.
+ANALYZE_AND_COACH_SYSTEM_PROMPT = (
+    GLOBAL_MATH_TUTORING_CONSTITUTION
+    + "너는 알찬학원의 수석 수학 강사다. 63개 유형 중 하나로 문제를 억지로 분류하는 고정표가 "
+    "아니라, 매 문제마다 네가 직접 읽고 판단해서 최적의 정석 풀이를 세우는 2단계 씽킹 "
+    "엔진이다.\n\n"
+    "★ [1단계 - Best-Path 자체 수립 (머릿속에서 먼저 끝내고, 결과만 CORE_CONCEPT/"
+    "BEST_PATH로 보고하라)]:\n"
+    "1. 문제가 최종적으로 구하라고 요구하는 미지수/목표(Target)가 정확히 무엇인지 먼저 "
+    "추출하라 - 지문 중간에 나오는 조건 키워드(내분점, 2:1, 직선 등)에 낚여서 그 키워드만 "
+    "보고 유형을 넘겨짚지 마라.\n"
+    "2. 그 목표를 가장 적은 계산으로 해결할 수 있는 교과서 핵심 성질/정리가 있는지 점검하라 "
+    "(예: 대칭성, 내분 삼각형의 무게중심이 원래 삼각형과 일치하는 불변 성질, 원과 직선이 "
+    "접할 때 d=r 등). 위 메타 헌법 2번 원칙에 따라, 이런 성질로 바로 끝낼 수 있는 문제를 "
+    "좌표를 전부 구하는 대수적 노가다로 풀 필요는 없다.\n"
+    "3. 그 성질을 적용한 가장 빠른 정석 풀이 로드맵(Best-Path)을 세워라.\n\n"
+    "★ [2단계 - 학생 풀이 진단 및 코칭]:\n"
+    "4. 사진 속 학생의 손글씨 풀이를 읽고, 1단계에서 세운 Best-Path와 비교하라.\n"
+    "5. 학생이 무식한 노가다(예: 중간 점들의 좌표를 하나하나 전부 구하기)로 풀고 있다면 - "
+    "답을 낼 수는 있지만 비효율적이라는 것과, 어떤 교과서 성질/정리를 쓰면 훨씬 빠르게 "
+    "풀리는지 '방향'만 제시하라. 그 성질을 적용한 최종 수치 계산까지 네가 대신 해주지는 "
+    "마라.\n"
+    "6. 학생이 이미 정석 성질/Best-Path를 올바르게 쓰고 있다면, 그 다음 전개·계산 과정에서 "
+    "부호/연산 오류가 난 정확한 지점만 짚어라 - 맞게 쓴 줄을 의심하지 마라.\n"
+    "7. 두 경우 모두 최종 정답 수치를 직접 알려주지 말고, 소크라테스식 유도 질문/코멘트로 "
+    "마무리하라.\n\n"
+    "★ [출력 형식 - 반드시 이 3개 라벨 그대로, 다른 설명 없이]:\n"
+    "CORE_CONCEPT: (이 문제의 핵심 개념/성질 1줄)\n"
+    "BEST_PATH: (그 성질을 적용한 추천 정석 풀이 로드맵 1~2줄)\n"
+    "COACHING: (학생 풀이에 대한 진단 및 코칭 멘트. 여러 줄 가능하며, 수식은 인라인 "
+    "$...$로 짧게만 인용하고 긴 계산식은 $$...$$ 독립 줄로 쓸 것)"
+)
 
-    verify_image_against_reference()와 같은 "스스로 풀지 말고 다른 점만 찾기" 원칙과
-    DIAGNOSIS:/HINT: 2줄 출력 형식을 쓰지만, 기준이 특정 문제의 정석 해설이 아니라
-    유형 단위의 표준 풀이 단계/금지 패턴이라는 점이 다르다.
+
+def parse_coaching_response(raw_text):
+    """analyze_and_coach_math_solution()의 'CORE_CONCEPT:/BEST_PATH:/COACHING:' 3줄 라벨
+    출력을 분리한다. COACHING은 마지막 라벨이라 그 이후 모든 줄(여러 줄 가능)을 통째로
+    담는다.
+
+    돌려주는 값: (core_concept, best_path, coaching, parsed_ok). 모델이 형식을 못 지켜
+    라벨을 하나도 못 찾으면 parsed_ok=False를 돌려주고, coaching에 원문 전체를 담아줘서
+    화면이 빈칸으로 끝나지 않게 한다(parse_handwriting_diagnosis와 동일한 방어 패턴).
+    """
+    core_concept, best_path = "", ""
+    coaching_lines = []
+    in_coaching = False
+    for line in (raw_text or "").splitlines():
+        stripped = line.strip()
+        upper = stripped.upper()
+        if upper.startswith("CORE_CONCEPT:"):
+            core_concept = stripped.split(":", 1)[1].strip()
+            in_coaching = False
+        elif upper.startswith("BEST_PATH:"):
+            best_path = stripped.split(":", 1)[1].strip()
+            in_coaching = False
+        elif upper.startswith("COACHING:"):
+            coaching_lines.append(stripped.split(":", 1)[1].strip())
+            in_coaching = True
+        elif in_coaching:
+            coaching_lines.append(line)
+
+    coaching = "\n".join(coaching_lines).strip()
+    parsed_ok = bool(core_concept or best_path or coaching)
+    if not parsed_ok:
+        coaching = (raw_text or "").strip()
+    return core_concept, best_path, coaching, parsed_ok
+
+
+def analyze_and_coach_math_solution(image_bytes, media_type, student_grade, taxonomy_hint=""):
+    """'Solve-First & Diagnose' 2단계 씽킹 엔진 - 63개 유형 중 하나로 사진을 억지로 묶는
+    고정 분류 없이, 모델이 문제 지문을 직접 읽고 최적의 정석 풀이(Best-Path)를 스스로
+    세운 뒤 그 기준으로 학생의 손글씨 풀이를 진단/코칭한다.
+
+    taxonomy_hint(선택)는 classify_concept_type()으로 참조용으로 느슨하게 태깅된 유형의
+    가이드라인 텍스트다 - 있으면 '참고 자료'로만 건네고, 최종 판단은 모델이 문제 지문을
+    직접 읽고 스스로 내리게 한다(단일 유형에 강제로 맞추지 않음).
     """
     client = anthropic.Anthropic(api_key=api_key)
+    user_text = f"[과목: {student_grade}]\n\n"
+    if taxonomy_hint:
+        user_text += (
+            "[참고용 유형 가이드라인 - 참고만 하고, 이 문제에 안 맞으면 무시하고 네가 직접 "
+            f"판단해라]\n{taxonomy_hint}\n\n"
+        )
+    user_text += (
+        "이 사진 속 문제를 읽고 1단계(Best-Path 수립)부터 끝낸 뒤, 2단계(학생 풀이 진단/"
+        "코칭)까지 진행해줘."
+    )
     response = client.messages.create(
         model=MODEL_NAME,
         max_tokens=1200,
-        system=(
-            GLOBAL_MATH_TUTORING_CONSTITUTION
-            + "너는 계산을 수행하는 모델이 아니라, 주어진 '유형별 채점 가이드라인'을 기준으로 "
-            "사진 속 학생의 손글씨 풀이를 채점하는 대조(Diff) 알고리즘이다. 절대 네 스스로 "
-            "문제를 풀거나 식을 새로 계산하지 마라.\n\n"
-            "★ [검증 규칙]:\n"
-            "1. 사진 속 학생의 풀이를 위에서부터 줄 단위로 읽어라.\n"
-            "2. 가이드라인에 표준 풀이 단계(standard_steps)가 있으면 반드시 그 단계 순서를 "
-            "기준의 레일로 삼아, 학생의 풀이가 몇 단계까지 수학적으로 동등한지 판단하라. "
-            "거기 없는 임의의 중간 계산 단계를 학생에게 추가로 요구하지 마라.\n"
-            "3. 가이드라인의 단계와 차이가 발견된 최초의 지점을 특정하라.\n"
-            "4. 학생의 풀이가 가이드라인의 '금지된 우회/오답 패턴'에 해당하는 접근을 썼다면, "
-            "그 즉시 해당 패턴을 지적하고 표준 풀이 단계로 돌아가도록 유도하라. 반대로, 위 2번 "
-            "메타 원칙(성질 우선)에 따라 기하학적 성질로 바로 넘어가는 줄을 '중간 좌표를 "
-            "구체적으로 안 구했다'며 지적하지 마라 - 그건 오류가 아니라 더 효율적인 풀이다.\n"
-            "5. 가이드라인을 그대로 노출하지 말고, 학생이 오류를 범한 단계의 '핵심 개념'을 "
-            "떠올리도록 1줄짜리 소크라테스 역질문을 작성하라.\n"
-            "6. 절대 네가 대신 식을 전개하거나 계산한 결과를 적어서 보여주지 마라 - 오류가 "
-            "발생한 줄과 개념만 짚어라.\n\n"
-            "★ [🚨 식의 '전제'와 '전개 과정'을 구분해라 - 맞는 식을 틀렸다고 억지 부리지 마라]:\n"
-            "- 학생의 어떤 줄이 표준 풀이 단계의 한 단계와 수학적으로 동등하다면(표현이 "
-            "다르더라도) 그 줄 자체를 의심하지 마라. 차이는 '그 줄에서 다음 줄로 넘어가는 "
-            "전개/계산 과정'에서만 찾아라.\n\n"
-            "★ [🚨 수식 서식 - 한 줄로 뭉개서 쓰지 마라]:\n"
-            "- 수식을 인라인($...$)으로 한 줄에 연달아 나열하지 마라. 짧게 하나만 인용할 "
-            "때만 인라인 $...$를 써라.\n\n"
-            "★ [출력 형식 - 반드시 이 2줄 형식 그대로, 다른 설명 없이]:\n"
-            "DIAGNOSIS: (표준 풀이 단계의 몇 번째 단계에서 어떤 차이/금지 패턴이 발견됐는지 "
-            "1줄로 요약. 차이가 없으면 어디까지 올바른지 1줄로 요약)\n"
-            "HINT: (가이드라인/정답을 그대로 노출하지 않는 소크라테스식 역질문 1줄. 수식은 "
-            "'$...$'로 표기)"
-        ),
+        system=ANALYZE_AND_COACH_SYSTEM_PROMPT,
         messages=[{
             "role": "user",
             "content": [
@@ -3260,14 +3308,7 @@ def verify_image_against_concept_taxonomy(image_bytes, media_type, taxonomy_guid
                         "data": base64.b64encode(image_bytes).decode("utf-8"),
                     },
                 },
-                {
-                    "type": "text",
-                    "text": (
-                        f"[과목: {student_grade}]\n\n"
-                        f"[유형별 채점 가이드라인]\n{taxonomy_guideline}\n\n"
-                        "위 가이드라인을 기준으로 사진 속 학생 풀이를 처음부터 대조 검증해줘."
-                    ),
-                },
+                {"type": "text", "text": user_text},
             ],
         }],
     )
@@ -3506,9 +3547,11 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                 )
         elif with_solution_uploader:
             # "📖 문제집에 바로 풀었어요"(1장 모드) - 사진 속 인쇄된 문제 번호를 먼저
-            # Vision으로 감지해서, DB(problem_solutions)에 등록된 정석 해설이 있으면
-            # 그걸 '바이블'로 대조 검증하고, 없으면 기존 자유형식 Vision 첨삭으로
-            # 조용히 전환한다.
+            # Vision으로 감지해서, DB(problem_solutions)에 등록된 특정 문제의 정석 해설이
+            # 있으면 그걸 '바이블'로 대조 검증한다. 등록된 게 없으면 'Solve-First &
+            # Diagnose' 2단계 씽킹 엔진(analyze_and_coach_math_solution)이 모델 스스로
+            # 최적의 정석 풀이를 세운 뒤 그 기준으로 진단/코칭한다 - 63개 유형 중 하나로
+            # 강제 매칭하던 방식은 폐기했다.
             send_telegram_photo(p_bytes, st.session_state.student_name, f"{mode} - 문제")
 
             with st.spinner("사진 속 문제 번호를 확인하는 중입니다..."):
@@ -3542,83 +3585,62 @@ def render_clinic_style_tab(feature_label, mode, state_prefix, with_solution_upl
                     log_label = "풀이 검토 사진 제출(DB 대조)"
                 else:
                     # 번호를 못 찾았거나(detected_code == "") 그 번호로 등록된 특정 문제
-                    # 해설이 없는 경우 - 더 느슨한 단위인 '유형(concept_taxonomies)'
-                    # 매칭을 시도한다. 같은 유형이면 특정 문제가 등록돼 있지 않아도
-                    # 여전히 '표준 풀이 단계' 기준으로 대조 채점할 수 있다.
-                    taxonomy_catalog = list_concept_taxonomies()
-                    taxonomy_row = None
-                    if not taxonomy_catalog:
-                        print("[1장 모드] concept_taxonomies 카탈로그가 비어 있어 유형 매칭을 "
-                              "건너뛰고 자유형식 첨삭으로 전환합니다.")
-                    else:
-                        with st.spinner("문제 유형을 분류하는 중입니다..."):
+                    # 해설이 없는 경우 - '63개 유형 중 하나로 강제 매칭'하던 경직된 분류를
+                    # 폐기하고, 모델이 문제 지문을 직접 읽어 최적의 정석 풀이(Best-Path)를
+                    # 스스로 세운 뒤 그 기준으로 학생 풀이를 진단하는 2단계 씽킹 엔진으로
+                    # 넘긴다. classify_concept_type은 더 이상 '어떤 엔진을 쓸지' 결정하는
+                    # 게이트가 아니라, 맞으면 참고하고 아니면 무시해도 되는 참조용 태그로만
+                    # 쓴다 - 실패해도(카탈로그 공백/매칭 실패/DB 에러) 조용히 빈 참고자료로
+                    # 넘어갈 뿐 메인 흐름을 막지 않는다.
+                    taxonomy_hint = ""
+                    try:
+                        taxonomy_catalog = list_concept_taxonomies()
+                        if not taxonomy_catalog:
+                            print("[1장 모드] concept_taxonomies 카탈로그가 비어 있어 참조 "
+                                  "태깅을 건너뜁니다(엔진 동작에는 영향 없음).")
+                        else:
                             matched_type_code = classify_concept_type(
                                 p_bytes, uploaded_problem.type, taxonomy_catalog
                             )
-                        if not matched_type_code:
-                            print("[1장 모드] classify_concept_type()이 빈 문자열을 반환해 "
-                                  "자유형식 첨삭으로 전환합니다.")
-                        else:
-                            taxonomy_row = get_concept_taxonomy(matched_type_code)
-                            if not taxonomy_row:
-                                print(
-                                    f"[1장 모드] get_concept_taxonomy({matched_type_code!r})이 None을 "
-                                    "반환했습니다 - DB 조회 실패 또는 해당 type_code 미등록. "
-                                    "자유형식 첨삭으로 전환합니다."
-                                )
+                            if matched_type_code:
+                                taxonomy_row = get_concept_taxonomy(matched_type_code)
+                                if taxonomy_row:
+                                    taxonomy_hint = format_concept_taxonomy_guideline(taxonomy_row)
+                                else:
+                                    print(
+                                        f"[1장 모드] get_concept_taxonomy({matched_type_code!r})이 "
+                                        "None - 참조 태그 없이 진행합니다(엔진 동작에는 영향 없음)."
+                                    )
+                    except Exception as e:
+                        print(f"[1장 모드] 참조용 유형 태깅 중 예외 발생(무시하고 진행): {e!r}")
 
-                    if taxonomy_row:
-                        type_label = taxonomy_row.get("type_name") or matched_type_code
-                        st.success(f"🎯 [{matched_type_code}] {type_label} (표준 가이드라인 적용)")
-                        taxonomy_guideline = format_concept_taxonomy_guideline(taxonomy_row)
-                        api_text = (
-                            f"[모드: {mode} / 과목: {st.session_state.student_grade}] 유형별 채점 "
-                            f"가이드라인과 대조해서 '{type_label}' 유형 손글씨 풀이를 검증했어."
+                    api_text = (
+                        f"[모드: {mode} / 과목: {st.session_state.student_grade}] 문제를 먼저 읽고 "
+                        "최적의 정석 풀이를 스스로 세운 뒤, 그 기준으로 손글씨 풀이를 진단/코칭했어."
+                    )
+                    with st.spinner("문제를 읽고 최적의 정석 풀이를 세우는 중입니다..."):
+                        raw_coaching = analyze_and_coach_math_solution(
+                            p_bytes, uploaded_problem.type, st.session_state.student_grade, taxonomy_hint,
                         )
-                        with st.spinner("유형별 가이드라인과 대조하며 풀이를 검증하는 중입니다..."):
-                            raw_diagnosis = verify_image_against_concept_taxonomy(
-                                p_bytes, uploaded_problem.type, taxonomy_guideline,
-                                st.session_state.student_grade,
-                            )
-                        diagnosis, hint, parsed_ok = parse_handwriting_diagnosis(raw_diagnosis)
-                        if not parsed_ok:
-                            bot_reply = diagnosis or "(빈 응답)"
-                        else:
-                            bot_reply = f"🔍 **진단 결과:** {diagnosis}"
-                            if hint:
-                                bot_reply += f"\n\n💡 **다혜T의 역질문 힌트:** {hint}"
-                        log_label = "풀이 검토 사진 제출(유형 가이드라인 대조)"
+                    core_concept, best_path, coaching, parsed_ok = parse_coaching_response(raw_coaching)
+
+                    if not parsed_ok:
+                        bot_reply = coaching or "(빈 응답)"
                     else:
-                        # 번호도 유형도 매칭되지 않으면 기존처럼 단일 Vision 호출로
-                        # 자유형식 첨삭을 돌려준다.
-                        api_text = (
-                            f"[모드: {mode} / 과목: {st.session_state.student_grade}] 이 사진 안의 손글씨 "
-                            "풀이를 첫 줄부터 줄 단위로 검증하여 잘한 점과 연산 실수가 발생한 정확한 위치를 "
-                            "콕 짚어라."
+                        st.info(f"💡 **문제 핵심:** {core_concept}")
+                        st.info(f"🧭 **추천 정석 풀이:** {best_path}")
+                        st.markdown("**📝 풀이 첨삭 및 코칭**")
+                        st.markdown(coaching)
+                        bot_reply = (
+                            f"💡 **문제 핵심:** {core_concept}\n\n"
+                            f"🧭 **추천 정석 풀이:** {best_path}\n\n"
+                            f"📝 **풀이 첨삭 및 코칭**\n\n{coaching}"
                         )
-                        content_blocks = [
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": uploaded_problem.type,
-                                    "data": base64.b64encode(p_bytes).decode("utf-8"),
-                                },
-                            },
-                            {"type": "text", "text": api_text},
-                        ]
-                        with st.spinner("손글씨 풀이를 줄 단위로 분석하는 중입니다..."):
-                            response = anthropic.Anthropic(api_key=api_key).messages.create(
-                                model=MODEL_NAME,
-                                max_tokens=2000,
-                                system=system_prompt,
-                                messages=[{"role": "user", "content": content_blocks}],
-                            )
-                        bot_reply = get_response_text(response)
-                        log_label = "풀이 검토 사진 제출"
+                    log_label = "풀이 검토 사진 제출(Solve-First & Diagnose)"
 
-                # 감지된 문제 번호가 있으면 그걸, 없으면 매칭된 유형 코드를 남겨야 선생님
-                # 대시보드에서 "몇 번 문제/어떤 유형 첨삭 기록인지"가 바로 보인다.
+                # 감지된 문제 번호가 있으면 그걸, 없으면 참조 태그로 잡힌 유형 코드를
+                # 남겨야 선생님 대시보드에서 "몇 번 문제/어떤 유형 첨삭 기록인지"가 바로
+                # 보인다 - matched_type_code는 참조용이라 없을 수도 있다(빈 문자열).
                 log_student_question(detected_code or matched_type_code, p_bytes, "", bot_reply)
 
                 # 사진 제출 자체도 대화 기록에 남겨서 새로고침 후에도 사진 내역이 보이게 한다.
